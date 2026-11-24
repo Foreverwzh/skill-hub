@@ -8,6 +8,7 @@ import {
 } from "smelt-ui";
 import { emit_event } from "smelt-plugin-api";
 import { resolveRuntime, runCli } from "./lib/bridge.js";
+import { selectableLine } from "./lib/ui.js";
 
 const CHANGED_EVENT = "ai.smelt.skill-hub/changed";
 
@@ -361,7 +362,23 @@ export default class SkillHubSettings extends View {
                     .items_center()
                     .justify_between()
                     .gap(8)
-                    .child(div().flex_1().min_w_0().text_xs().text_color(c.muted_foreground).truncate().child(re))
+                    .child(
+                      div()
+                        .flex_1()
+                        .min_w_0()
+                        .child(selectableLine(`re-text-${idx}`, re, c.muted_foreground)),
+                    )
+                    .child(
+                      SmeltButton.new(`copy-re-${idx}`)
+                        .label("复制")
+                        .quiet()
+                        .small()
+                        .on_click((_ev, cx) => {
+                          cx.write_to_clipboard(re);
+                          this.notice = { error: false, text: "已复制正则规则" };
+                          cx.notify();
+                        }),
+                    )
                     .child(
                       SmeltButton.new(`del-re-${idx}`)
                         .label("移除")
@@ -381,8 +398,68 @@ export default class SkillHubSettings extends View {
             el.child(
               box(c)
                 .child(div().text_sm().font_semibold().child("运行环境诊断"))
-                .child(div().text_xs().text_color(c.muted_foreground).child(`Node: ${this.runtimeInfo.nodePath}`))
-                .child(div().text_xs().text_color(c.muted_foreground).child(`CLI: ${this.runtimeInfo.cliPath}`)),
+                .child(
+                  div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_between()
+                    .gap(8)
+                    .child(
+                      div()
+                        .flex_1()
+                        .min_w_0()
+                        .child(
+                          selectableLine(
+                            "rt-node",
+                            `Node: ${this.runtimeInfo.nodePath}`,
+                            c.muted_foreground,
+                          ),
+                        ),
+                    )
+                    .child(
+                      SmeltButton.new("copy-rt-node")
+                        .label("复制")
+                        .quiet()
+                        .small()
+                        .on_click((_ev, cx) => {
+                          cx.write_to_clipboard(this.runtimeInfo.nodePath);
+                          this.notice = { error: false, text: "已复制 Node 路径" };
+                          cx.notify();
+                        }),
+                    ),
+                )
+                .child(
+                  div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_between()
+                    .gap(8)
+                    .child(
+                      div()
+                        .flex_1()
+                        .min_w_0()
+                        .child(
+                          selectableLine(
+                            "rt-cli",
+                            `CLI: ${this.runtimeInfo.cliPath}`,
+                            c.muted_foreground,
+                          ),
+                        ),
+                    )
+                    .child(
+                      SmeltButton.new("copy-rt-cli")
+                        .label("复制")
+                        .quiet()
+                        .small()
+                        .on_click((_ev, cx) => {
+                          cx.write_to_clipboard(this.runtimeInfo.cliPath);
+                          this.notice = { error: false, text: "已复制 CLI 路径" };
+                          cx.notify();
+                        }),
+                    ),
+                ),
             ),
           ),
       );

@@ -632,6 +632,29 @@ export function setSourceProfile(sourceId, profileName, skillDirNames) {
   return writeSourceProfiles(source, profiles);
 }
 
+/**
+ * Adds or removes a single skill from an existing profile in its source's profiles.json.
+ */
+export function updateSourceProfileMember(sourceId, profileName, skillDirName, included) {
+  const cleanSkill = String(skillDirName || "").trim();
+  if (!cleanSkill) {
+    throw new Error("请指定技能目录名");
+  }
+  const source = getSourceById(sourceId);
+  const profiles = readSourceProfiles(source);
+  if (!(profileName in profiles)) {
+    throw new Error(`源 "${sourceId}" 中不存在分组 "${profileName}"`);
+  }
+  const set = new Set((profiles[profileName] || []).map(String).filter(Boolean));
+  if (included) {
+    set.add(cleanSkill);
+  } else {
+    set.delete(cleanSkill);
+  }
+  profiles[profileName] = [...set].sort();
+  return writeSourceProfiles(source, profiles);
+}
+
 export function deleteSourceProfile(sourceId, profileName) {
   const source = getSourceById(sourceId);
   const profiles = readSourceProfiles(source);

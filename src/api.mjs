@@ -41,6 +41,7 @@ import {
   removeSource,
   setSourceProfile,
   setSourceTrust,
+  updateSourceProfileMember,
 } from "./sources.mjs";
 import { applySync, buildSkillCatalog, planSync } from "./sync.mjs";
 
@@ -460,4 +461,5 @@ export {
   runDoctor,
   setSourceProfile,
   setSourceTrust,
+  updateSourceProfileMember,
 };

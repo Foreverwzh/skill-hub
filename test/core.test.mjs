@@ -579,3 +579,68 @@ test("setSourceTrust safely switches source trust levels and enforces leak/remot
   assert.throws(() => setSourceTrust("flex", { trust: "local" }), /已配置 Git 远端/);
   assert.throws(() => setSourceTrust("flex", { trust: "internal" }), /公网托管域名/);
 });
+
+test("profile CLI supports empty creation, add-skill, remove-skill, clearing with --skills=, and delete", () => {
+  const personalDir = path.join(tmpRoot, "sources", "personal");
+  addSource({ id: "personal", name: "个人通用", path: personalDir, trust: "github" });
+  writeSkill(path.join(personalDir, "skills"), "game-a", { description: "Game A" });
+  writeSkill(path.join(personalDir, "skills"), "game-b", { description: "Game B" });
+
+  const env = { ...process.env, SKILL_HUB_USER_HOME: userHome, SKILL_HUB_HOME: hubConfigDir };
+  const runJson = (args) =>
+    JSON.parse(
+      execFileSync(process.execPath, [CLI_PATH, ...args, "--json"], {
+        encoding: "utf8",
+        env,
+      }),
+    );
+
+  // Create empty profile via --skills=
+  const created = runJson(["profile", "set", "personal:gamedev", "--skills="]);
+  assert.deepEqual(created.profiles.gamedev, []);
+
+  // Enable profile so delete cleanup is also exercised
+  runJson(["profile", "enable", "personal:gamedev"]);
+
+  // Add skills one by one
+  const addedA = runJson(["profile", "add-skill", "personal:gamedev", "game-a"]);
+  assert.deepEqual(addedA.profiles.gamedev, ["game-a"]);
+  const addedB = runJson(["profile", "add-skill", "personal:gamedev", "game-b"]);
+  assert.deepEqual(addedB.profiles.gamedev, ["game-a", "game-b"]);
+
+  // Remove one skill and inspect full status
+  const removedA = runJson(["profile", "remove-skill", "personal:gamedev", "game-a"]);
+  assert.deepEqual(removedA.profiles.gamedev, ["game-b"]);
+
+  const statusAfterRemove = getFullStatus();
+  const prof = statusAfterRemove.profiles.find((p) => p.ref === "personal:gamedev");
+  assert.ok(prof);
+  assert.deepEqual(prof.skills, ["game-b"]);
+  assert.equal(prof.enabled, true);
+
+  const skillA = statusAfterRemove.skills.find((s) => s.ref === "personal:game-a");
+  const skillB = statusAfterRemove.skills.find((s) => s.ref === "personal:game-b");
+  assert.deepEqual(skillA.profiles, []);
+  assert.deepEqual(skillB.profiles, ["personal:gamedev"]);
+
+  // Clear all members via --skills=
+  const cleared = runJson(["profile", "set", "personal:gamedev", "--skills="]);
+  assert.deepEqual(cleared.profiles.gamedev, []);
+
+  // add-skill on nonexistent profile must fail
+  assert.throws(() =>
+    execFileSync(
+      process.execPath,
+      [CLI_PATH, "profile", "add-skill", "personal:missing", "game-a", "--json"],
+      { encoding: "utf8", env },
+    ),
+  );
+
+  // Delete profile removes it from profiles.json and enabledProfiles
+  runJson(["profile", "delete", "personal:gamedev"]);
+  const profilesDisk = JSON.parse(
+    fs.readFileSync(path.join(personalDir, "profiles.json"), "utf8"),
+  );
+  assert.equal("gamedev" in profilesDisk, false);
+  assert.equal(getFullStatus().config.enabledProfiles.includes("personal:gamedev"), false);
+});

@@ -23,6 +23,7 @@ import {
   view_shown,
 } from "smelt-plugin-api";
 import { MODE_LABELS, TRUST_LABELS, runCli } from "./lib/bridge.js";
+import { selectableLine } from "./lib/ui.js";
 
 const VIEW_ID = "ai.smelt.skill-hub/main";
 const CHANGED_EVENT = "ai.smelt.skill-hub/changed";
@@ -88,6 +89,7 @@ export default class SkillHubView extends View {
     this.loading = true;
     this.busyAction = null;
     this.notice = null;
+    this.copiedNotice = false;
     this.filterQuery = "";
     this.filterTrust = "all";
     this.expandedSkill = null;
@@ -97,6 +99,8 @@ export default class SkillHubView extends View {
     this.showNewProfile = false;
     this.newProfileSourceId = "";
     this.newProfileMembers = new Set();
+    this.editingProfileRef = null;
+    this.editingProfileMembers = new Set();
     this.pushingSourceId = null;
     this.convertingSourceId = null;
     this.editingTrustSourceId = null;
@@ -238,13 +242,28 @@ export default class SkillHubView extends View {
       if (!this.newProfileSourceId && data.sources?.length > 0) {
         this.newProfileSourceId = data.sources[0].id;
       }
+      if (
+        this.editingProfileRef &&
+        (data.profiles || []).every((p) => p.ref !== this.editingProfileRef)
+      ) {
+        this.editingProfileRef = null;
+        this.editingProfileMembers = new Set();
+      }
     } catch (err) {
+      this.copiedNotice = false;
       this.notice = { level: "error", text: err?.message || String(err) };
     } finally {
       this.loading = false;
       if (!silent) this.busyAction = null;
       cx.notify();
     }
+  }
+
+  copyText(text, label, cx) {
+    cx.write_to_clipboard(String(text || ""));
+    this.copiedNotice = false;
+    this.notice = { level: "ok", text: `已复制${label}：${text}` };
+    cx.notify();
   }
 
   async runAction(cx, actionKey, fn, successText = null) {
@@ -256,9 +275,11 @@ export default class SkillHubView extends View {
       await this.refresh(cx, { silent: true });
       if (successText) {
         const text = typeof successText === "function" ? successText(res) : successText;
+        this.copiedNotice = false;
         this.notice = { level: "ok", text };
       }
     } catch (err) {
+      this.copiedNotice = false;
       this.notice = { level: "error", text: err?.message || String(err) };
     } finally {
       this.busyAction = null;
@@ -448,10 +469,19 @@ export default class SkillHubView extends View {
                 .border_1()
                 .border_color(c.border)
                 .bg(c.surface)
-                .text_xs()
-                .text_color(c.foreground)
-                .child(this.notice.text),
+                .child(selectableLine("hub-notice-text", this.notice.text, c.foreground)),
             );
+          }),
+      )
+      .child(
+        SmeltButton.new("btn-copy-notice")
+          .label(this.copiedNotice ? "已复制" : "复制")
+          .quiet()
+          .small()
+          .on_click((_ev, cx) => {
+            cx.write_to_clipboard(String(this.notice?.text || ""));
+            this.copiedNotice = true;
+            cx.notify();
           }),
       )
       .child(
@@ -461,6 +491,7 @@ export default class SkillHubView extends View {
           .small()
           .on_click((_ev, cx) => {
             this.notice = null;
+            this.copiedNotice = false;
             cx.notify();
           }),
       );
@@ -656,7 +687,30 @@ export default class SkillHubView extends View {
                 .child(skills.length === 0 ? "当前源内还没有技能。" : "没有匹配搜索条件的技能。"),
             ),
           )
-          .children(filtered.map((skill) => this.renderSkillRow(c, skill, sources))),
+          .children(filtered.map((skill) => this.renderSkillRow(c, skill, sources, profiles))),
+      );
+  }
+
+  renderProfileMemberGrid(c, { idPrefix, skills, selectedSet, emptyText }) {
+    if (skills.length === 0) {
+      return div().text_xs().text_color(c.muted_foreground).child(emptyText);
+    }
+    return div()
+      .flex()
+      .flex_row()
+      .flex_wrap()
+      .gap(8)
+      .children(
+        skills.map((sk) =>
+          SmeltCheckbox.new(`${idPrefix}${sk.dirName}`)
+            .label(sk.dirName)
+            .checked(selectedSet.has(sk.dirName))
+            .on_change((checked, cx) => {
+              if (checked) selectedSet.add(sk.dirName);
+              else selectedSet.delete(sk.dirName);
+              cx.notify();
+            }),
+        ),
       );
   }
 
@@ -666,6 +720,11 @@ export default class SkillHubView extends View {
     const srcSkills = (this.status?.skills || []).filter(
       (s) => s.sourceId === selectedSrc?.id,
     );
+    const editingProfile =
+      profiles.find((p) => p.ref === this.editingProfileRef) || null;
+    const editSrcSkills = editingProfile
+      ? (this.status?.skills || []).filter((s) => s.sourceId === editingProfile.sourceId)
+      : [];
 
     return sectionBox(c)
       .child(
@@ -688,6 +747,10 @@ export default class SkillHubView extends View {
               .small()
               .on_click((_ev, cx) => {
                 this.showNewProfile = !this.showNewProfile;
+                if (this.showNewProfile) {
+                  this.editingProfileRef = null;
+                  this.editingProfileMembers = new Set();
+                }
                 cx.notify();
               }),
           ),
@@ -708,8 +771,9 @@ export default class SkillHubView extends View {
             .flex_wrap()
             .gap(10)
             .children(
-              profiles.map((p) =>
-                div()
+              profiles.map((p) => {
+                const isEditing = this.editingProfileRef === p.ref;
+                return div()
                   .flex()
                   .flex_row()
                   .items_center()
@@ -719,6 +783,7 @@ export default class SkillHubView extends View {
                   .rounded(6)
                   .border_1()
                   .border_color(c.border)
+                  .bg(isEditing ? c.background : c.surface)
                   .child(
                     SmeltCheckbox.new(`prof-${p.ref}`)
                       .label(`${p.ref} (${p.skills.length})`)
@@ -735,8 +800,159 @@ export default class SkillHubView extends View {
                         );
                       }),
                   )
-                  .child(trustBadge(p.trust)),
-              ),
+                  .child(trustBadge(p.trust))
+                  .child(
+                    SmeltButton.new(`btn-edit-prof-${p.ref}`)
+                      .label(isEditing ? "收起" : "编辑")
+                      .quiet()
+                      .small()
+                      .disabled(Boolean(this.busyAction))
+                      .on_click((_ev, cx) => {
+                        if (isEditing) {
+                          this.editingProfileRef = null;
+                          this.editingProfileMembers = new Set();
+                        } else {
+                          this.showNewProfile = false;
+                          this.editingProfileRef = p.ref;
+                          this.editingProfileMembers = new Set(p.skills || []);
+                        }
+                        cx.notify();
+                      }),
+                  )
+                  .child(
+                    SmeltConfirmButton.new(`btn-del-prof-${p.ref}`)
+                      .label("删除")
+                      .danger_quiet()
+                      .small()
+                      .title(`确认删除分组「${p.ref}」？`)
+                      .description("仅删除该分组定义并取消本机启用状态，不会删除任何技能文件。")
+                      .action("确认删除")
+                      .on_confirm((cx) => {
+                        cx.spawn((cx) =>
+                          this.runAction(
+                            cx,
+                            `del-prof:${p.ref}`,
+                            async () => {
+                              const res = await runCli(["profile", "delete", p.ref]);
+                              if (this.editingProfileRef === p.ref) {
+                                this.editingProfileRef = null;
+                                this.editingProfileMembers = new Set();
+                              }
+                              return res;
+                            },
+                            `已删除分组 ${p.ref}`,
+                          ),
+                        );
+                      }),
+                  );
+              }),
+            ),
+        ),
+      )
+      .when(editingProfile, (el) =>
+        el.child(
+          div()
+            .flex()
+            .flex_col()
+            .gap(8)
+            .pt(8)
+            .border_t_1()
+            .border_color(c.border)
+            .child(
+              div()
+                .flex()
+                .flex_row()
+                .flex_wrap()
+                .items_center()
+                .justify_between()
+                .gap(8)
+                .child(
+                  div()
+                    .text_xs()
+                    .text_color(c.muted_foreground)
+                    .child(
+                      `编辑分组 ${editingProfile.ref} 成员（已选 ${this.editingProfileMembers.size} / ${editSrcSkills.length}，仅限「${editingProfile.sourceName}」源内技能）`,
+                    ),
+                )
+                .child(
+                  div()
+                    .flex()
+                    .flex_row()
+                    .flex_wrap()
+                    .items_center()
+                    .gap(6)
+                    .child(
+                      SmeltButton.new("btn-edit-prof-all")
+                        .label("全选")
+                        .quiet()
+                        .small()
+                        .on_click((_ev, cx) => {
+                          this.editingProfileMembers = new Set(
+                            editSrcSkills.map((sk) => sk.dirName),
+                          );
+                          cx.notify();
+                        }),
+                    )
+                    .child(
+                      SmeltButton.new("btn-edit-prof-none")
+                        .label("清空")
+                        .quiet()
+                        .small()
+                        .on_click((_ev, cx) => {
+                          this.editingProfileMembers = new Set();
+                          cx.notify();
+                        }),
+                    )
+                    .child(
+                      SmeltButton.new("btn-save-edit-prof")
+                        .label("保存成员")
+                        .primary()
+                        .small()
+                        .loading(this.busyAction === "save-edit-profile")
+                        .disabled(Boolean(this.busyAction))
+                        .on_click((_ev, cx) => {
+                          const targetRef = editingProfile.ref;
+                          const members = [...this.editingProfileMembers];
+                          const skillsCsv = members.join(",");
+                          cx.spawn((cx) =>
+                            this.runAction(
+                              cx,
+                              "save-edit-profile",
+                              async () => {
+                                await runCli([
+                                  "profile",
+                                  "set",
+                                  targetRef,
+                                  `--skills=${skillsCsv}`,
+                                ]);
+                                this.editingProfileRef = null;
+                                this.editingProfileMembers = new Set();
+                              },
+                              `已更新分组 ${targetRef}（${members.length} 个技能）`,
+                            ),
+                          );
+                        }),
+                    )
+                    .child(
+                      SmeltButton.new("btn-cancel-edit-prof")
+                        .label("取消")
+                        .quiet()
+                        .small()
+                        .on_click((_ev, cx) => {
+                          this.editingProfileRef = null;
+                          this.editingProfileMembers = new Set();
+                          cx.notify();
+                        }),
+                    ),
+                ),
+            )
+            .child(
+              this.renderProfileMemberGrid(c, {
+                idPrefix: `ep-m-${editingProfile.ref}-`,
+                skills: editSrcSkills,
+                selectedSet: this.editingProfileMembers,
+                emptyText: "该源下暂无已纳管技能，请先到「设备与体检」纳管技能。",
+              }),
             ),
         ),
       )
@@ -808,8 +1024,7 @@ export default class SkillHubView extends View {
                               "profile",
                               "set",
                               `${selectedSrc.id}:${pName}`,
-                              "--skills",
-                              skillsCsv,
+                              `--skills=${skillsCsv}`,
                             ]);
                             this.newProfileNameInput.set_value("");
                             this.newProfileMembers = new Set();
@@ -826,25 +1041,60 @@ export default class SkillHubView extends View {
                 .flex()
                 .flex_row()
                 .flex_wrap()
+                .items_center()
+                .justify_between()
                 .gap(8)
-                .children(
-                  srcSkills.map((sk) =>
-                    SmeltCheckbox.new(`np-m-${sk.ref}`)
-                      .label(sk.dirName)
-                      .checked(this.newProfileMembers.has(sk.dirName))
-                      .on_change((checked, cx) => {
-                        if (checked) this.newProfileMembers.add(sk.dirName);
-                        else this.newProfileMembers.delete(sk.dirName);
-                        cx.notify();
-                      }),
-                  ),
+                .child(
+                  div()
+                    .text_xs()
+                    .text_color(c.muted_foreground)
+                    .child(
+                      `选择「${selectedSrc.name}」源内技能（已选 ${this.newProfileMembers.size} / ${srcSkills.length}）：`,
+                    ),
+                )
+                .child(
+                  div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(6)
+                    .child(
+                      SmeltButton.new("btn-new-prof-all")
+                        .label("全选")
+                        .quiet()
+                        .small()
+                        .on_click((_ev, cx) => {
+                          this.newProfileMembers = new Set(
+                            srcSkills.map((sk) => sk.dirName),
+                          );
+                          cx.notify();
+                        }),
+                    )
+                    .child(
+                      SmeltButton.new("btn-new-prof-none")
+                        .label("清空")
+                        .quiet()
+                        .small()
+                        .on_click((_ev, cx) => {
+                          this.newProfileMembers = new Set();
+                          cx.notify();
+                        }),
+                    ),
                 ),
+            )
+            .child(
+              this.renderProfileMemberGrid(c, {
+                idPrefix: `np-m-${selectedSrc.id}:`,
+                skills: srcSkills,
+                selectedSet: this.newProfileMembers,
+                emptyText: "该源下暂无已纳管技能，请先到「设备与体检」纳管技能。",
+              }),
             ),
         ),
       );
   }
 
-  renderSkillRow(c, skill, sources) {
+  renderSkillRow(c, skill, sources, profiles) {
     const isExpanded = this.expandedSkill === skill.ref;
     const linkTargets = (this.status?.targets || []).filter((t) => t.mode === "link");
     const otherSources = sources.filter((s) => s.id !== skill.sourceId);
@@ -903,6 +1153,13 @@ export default class SkillHubView extends View {
           )
           .child(trustBadge(skill.trust))
           .child(SmeltBadge.new().child(skill.sourceName))
+          .children(
+            (skill.profiles || []).map((pRef) =>
+              SmeltBadge.new().child(
+                `分组:${pRef.includes(":") ? pRef.split(":").slice(1).join(":") : pRef}`,
+              ),
+            ),
+          )
           .when(overrideTag, (el) =>
             el.child(div().text_xs().text_color(c.muted_foreground).child(overrideTag)),
           )
@@ -938,11 +1195,12 @@ export default class SkillHubView extends View {
           .child(coverageSummary(skill)),
       )
       .when(isExpanded, (el) =>
-        el.child(this.renderSkillExpanded(c, skill, linkTargets, otherSources)),
+        el.child(this.renderSkillExpanded(c, skill, linkTargets, otherSources, profiles)),
       );
   }
 
-  renderSkillExpanded(c, skill, linkTargets, otherSources) {
+  renderSkillExpanded(c, skill, linkTargets, otherSources, profiles) {
+    const sourceProfiles = (profiles || []).filter((p) => p.sourceId === skill.sourceId);
     const activeDraft =
       this.moveDraft && this.moveDraft.dirName === skill.dirName ? this.moveDraft : null;
     const dstSource = activeDraft
@@ -962,9 +1220,97 @@ export default class SkillHubView extends View {
       .gap(8)
       .child(
         div()
-          .text_xs()
-          .text_color(c.muted_foreground)
-          .child(`目录路径: ${skill.dir}`),
+          .flex()
+          .flex_row()
+          .items_center()
+          .justify_between()
+          .gap(8)
+          .child(
+            div()
+              .flex_1()
+              .min_w_0()
+              .child(
+                selectableLine(
+                  `skill-dir-${skill.ref}`,
+                  `目录路径: ${skill.dir}`,
+                  c.muted_foreground,
+                ),
+              ),
+          )
+          .child(
+            SmeltButton.new(`copy-skill-dir-${skill.ref}`)
+              .label("复制路径")
+              .quiet()
+              .small()
+              .on_click((_ev, cx) => {
+                this.copyText(skill.dir, "技能路径", cx);
+              }),
+          ),
+      )
+      .child(
+        div()
+          .flex()
+          .flex_row()
+          .flex_wrap()
+          .items_center()
+          .gap(8)
+          .child(div().text_xs().text_color(c.muted_foreground).child("所属分组:"))
+          .when(sourceProfiles.length === 0, (row) =>
+            row
+              .child(
+                div()
+                  .text_xs()
+                  .text_color(c.muted_foreground)
+                  .child(`「${skill.sourceName}」源下暂无分组`),
+              )
+              .child(
+                SmeltButton.new(`btn-new-prof-from-${skill.ref}`)
+                  .label("去新建分组")
+                  .quiet()
+                  .small()
+                  .on_click((_ev, cx) => {
+                    this.newProfileSourceId = skill.sourceId;
+                    this.newProfileMembers = new Set([skill.dirName]);
+                    this.editingProfileRef = null;
+                    this.editingProfileMembers = new Set();
+                    this.showNewProfile = true;
+                    cx.notify();
+                  }),
+              ),
+          )
+          .when(sourceProfiles.length > 0, (row) =>
+            row.children(
+              sourceProfiles.map((p) =>
+                SmeltCheckbox.new(`sk-prof-${skill.ref}-${p.name}`)
+                  .label(p.enabled ? `${p.name} (已启用)` : p.name)
+                  .checked((skill.profiles || []).includes(p.ref))
+                  .on_change((checked, cx) => {
+                    cx.spawn((cx) =>
+                      this.runAction(
+                        cx,
+                        `sk-prof:${skill.ref}:${p.ref}`,
+                        async () => {
+                          const res = await runCli([
+                            "profile",
+                            checked ? "add-skill" : "remove-skill",
+                            p.ref,
+                            skill.dirName,
+                          ]);
+                          if (this.editingProfileRef === p.ref) {
+                            if (checked) this.editingProfileMembers.add(skill.dirName);
+                            else this.editingProfileMembers.delete(skill.dirName);
+                          }
+                          return res;
+                        },
+                        checked
+                          ? `已将 ${skill.dirName} 加入分组 ${p.ref}`
+                          : `已将 ${skill.dirName} 移出分组 ${p.ref}`,
+                      ),
+                    );
+                  }),
+              ),
+            ),
+          ),
       )
       .when(linkTargets.length > 0, (el) =>
         el.child(
@@ -1469,30 +1815,80 @@ export default class SkillHubView extends View {
       )
       .child(
         div()
-          .text_xs()
-          .text_color(c.muted_foreground)
-          .child(`ID: ${source.id}  ·  路径: ${source.path}  ·  技能子目录: ${source.skillsRelDir}`),
+          .flex()
+          .flex_row()
+          .items_center()
+          .justify_between()
+          .gap(8)
+          .child(
+            div()
+              .flex_1()
+              .min_w_0()
+              .child(
+                selectableLine(
+                  `src-meta-${source.id}`,
+                  `ID: ${source.id} · 路径: ${source.path} · 技能子目录: ${source.skillsRelDir}`,
+                  c.muted_foreground,
+                ),
+              ),
+          )
+          .child(
+            SmeltButton.new(`src-copy-path-${source.id}`)
+              .label("复制路径")
+              .quiet()
+              .small()
+              .on_click((_ev, cx) => {
+                this.copyText(source.absPath, "源路径", cx);
+              }),
+          ),
       )
-      .child(
-        div()
-          .text_xs()
-          .text_color(c.muted_foreground)
-          .child(formatGitSummary(git)),
-      )
+      .child(selectableLine(`src-git-${source.id}`, formatGitSummary(git), c.muted_foreground))
       .when(git.remotes && git.remotes.length > 0, (el) =>
         el.child(
           div()
-            .text_xs()
-            .text_color(c.muted_foreground)
-            .child(`Remotes: ${git.remotes.map((r) => `${r.name} -> ${r.url}`).join(" | ")}`),
+            .flex()
+            .flex_col()
+            .gap(4)
+            .children(
+              git.remotes.map((r, idx) =>
+                div()
+                  .flex()
+                  .flex_row()
+                  .items_center()
+                  .justify_between()
+                  .gap(8)
+                  .child(
+                    div()
+                      .flex_1()
+                      .min_w_0()
+                      .child(
+                        selectableLine(
+                          `src-remote-${source.id}-${idx}`,
+                          `Remote (${r.name}): ${r.url}`,
+                          c.muted_foreground,
+                        ),
+                      ),
+                  )
+                  .child(
+                    SmeltButton.new(`src-copy-remote-${source.id}-${idx}`)
+                      .label("复制地址")
+                      .quiet()
+                      .small()
+                      .on_click((_ev, cx) => {
+                        this.copyText(r.url, " Remote 地址", cx);
+                      }),
+                  ),
+              ),
+            ),
         ),
       )
       .when(git.dirty && git.changedSkills?.length > 0, (el) =>
         el.child(
-          div()
-            .text_xs()
-            .text_color(c.muted_foreground)
-            .child(`待提交技能改动: ${git.changedSkills.join(", ")}`),
+          selectableLine(
+            `src-dirty-${source.id}`,
+            `待提交技能改动: ${git.changedSkills.join(", ")}`,
+            c.muted_foreground,
+          ),
         ),
       )
       .when(isEditingTrust, (el) =>
@@ -1884,12 +2280,12 @@ export default class SkillHubView extends View {
                     ),
                 )
                 .children(
-                  shownConsActions.map((act) =>
-                    div()
-                      .text_xs()
-                      .text_color(c.muted_foreground)
-                      .truncate()
-                      .child(`· ${act.description}`),
+                  shownConsActions.map((act, idx) =>
+                    selectableLine(
+                      `cons-act-${idx}`,
+                      `· ${act.description}`,
+                      c.muted_foreground,
+                    ),
                   ),
                 ),
             ),
@@ -1989,7 +2385,7 @@ export default class SkillHubView extends View {
             ),
           )
           .children(
-            doctor.unmanaged.map((item) =>
+            doctor.unmanaged.map((item, idx) =>
               div()
                 .flex()
                 .flex_col()
@@ -2087,12 +2483,11 @@ export default class SkillHubView extends View {
                   ),
                 )
                 .child(
-                  div()
-                    .text_xs()
-                    .text_color(c.muted_foreground)
-                    .child(
-                      `路径: ${item.path}  ·  当前可见位置: ${(item.locations || []).map((l) => l.label).join(", ")}`,
-                    ),
+                  selectableLine(
+                    `unm-path-${idx}`,
+                    `路径: ${item.path} · 当前可见位置: ${(item.locations || []).map((l) => l.label).join(", ")}`,
+                    c.muted_foreground,
+                  ),
                 ),
             ),
           ),
@@ -2166,11 +2561,12 @@ export default class SkillHubView extends View {
               ),
           )
           .children(
-            doctor.brokenLinks.map((b) =>
-              div()
-                .text_xs()
-                .text_color(c.muted_foreground)
-                .child(`[失效软链] ${b.path} -> ${b.rawTarget || "缺失目标"}`),
+            doctor.brokenLinks.map((b, idx) =>
+              selectableLine(
+                `broken-link-${idx}`,
+                `[失效软链] ${b.path} -> ${b.rawTarget || "缺失目标"}`,
+                c.muted_foreground,
+              ),
             ),
           )
           .children(
@@ -2281,9 +2677,13 @@ export default class SkillHubView extends View {
                       .child(
                         div()
                           .px(24)
-                          .text_xs()
-                          .text_color(c.muted_foreground)
-                          .child(cp.path),
+                          .child(
+                            selectableLine(
+                              `cf-path-${cf.dirName}-${idx}`,
+                              cp.path,
+                              c.muted_foreground,
+                            ),
+                          ),
                       ),
                   ),
                 );

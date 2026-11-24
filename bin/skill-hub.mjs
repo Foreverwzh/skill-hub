@@ -23,6 +23,7 @@ import {
   toggleProfile,
   toggleSkill,
   updateSettings,
+  updateSourceProfileMember,
   updateTarget,
 } from "../src/api.mjs";
 import { getSourceById, readSourceProfiles } from "../src/sources.mjs";
@@ -76,6 +77,14 @@ function splitList(val) {
     .filter(Boolean);
 }
 
+function parseProfileRef(rawRef) {
+  const [sourceId, profileName, extra] = String(rawRef || "").split(":");
+  if (!sourceId || !profileName || extra !== undefined) {
+    throw new Error("格式应为 <sourceId>:<profileName>");
+  }
+  return [sourceId, profileName];
+}
+
 function printHelp() {
   console.log(`skill-hub — 跨端多 Agent 技能管理与防泄密同步工具
 
@@ -99,6 +108,8 @@ function printHelp() {
   skill-hub profile enable <sourceId:profile> [--json]
   skill-hub profile disable <sourceId:profile> [--json]
   skill-hub profile set <sourceId:profile> --skills <s1,s2,...> [--json]
+  skill-hub profile add-skill <sourceId:profile> <skillDirName> [--json]
+  skill-hub profile remove-skill <sourceId:profile> <skillDirName> [--json]
   skill-hub profile delete <sourceId:profile> [--json]
   skill-hub skill enable <sourceId:skill|skill> [--target <targetId>] [--json]
   skill-hub skill disable <sourceId:skill|skill> [--target <targetId>] [--json]
@@ -333,18 +344,34 @@ async function main() {
         return;
       }
       if (sub === "set") {
-        const ref = positionals[2] || flags.ref;
-        const [sourceId, profileName] = String(ref || "").split(":");
-        if (!sourceId || !profileName) throw new Error("格式应为 <sourceId>:<profileName>");
+        const [sourceId, profileName] = parseProfileRef(positionals[2] || flags.ref);
         const skills = splitList(flags.skills);
         const saved = setSourceProfile(sourceId, profileName, skills);
         outputResult({ ok: true, sourceId, profileName, profiles: saved }, asJson);
         return;
       }
+      if (sub === "add-skill" || sub === "remove-skill") {
+        const [sourceId, profileName] = parseProfileRef(positionals[2] || flags.ref);
+        const skillDirName =
+          positionals[3] || (typeof flags.skill === "string" ? flags.skill : "");
+        if (!String(skillDirName).trim()) throw new Error("请指定技能目录名");
+        const included = sub === "add-skill";
+        const saved = updateSourceProfileMember(sourceId, profileName, skillDirName, included);
+        outputResult(
+          {
+            ok: true,
+            sourceId,
+            profileName,
+            skillDirName: String(skillDirName).trim(),
+            included,
+            profiles: saved,
+          },
+          asJson,
+        );
+        return;
+      }
       if (sub === "delete") {
-        const ref = positionals[2] || flags.ref;
-        const [sourceId, profileName] = String(ref || "").split(":");
-        if (!sourceId || !profileName) throw new Error("格式应为 <sourceId>:<profileName>");
+        const [sourceId, profileName] = parseProfileRef(positionals[2] || flags.ref);
         const saved = deleteSourceProfile(sourceId, profileName);
         outputResult({ ok: true, sourceId, profileName, profiles: saved }, asJson);
         return;

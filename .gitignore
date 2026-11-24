@@ -1,5 +1,5 @@
 node_modules/
 .DS_Store
 *.log
-plugin/gpui-kit.d.ts
-plugin/jsconfig.json
+plugin/**/gpui-kit.d.ts
+plugin/**/jsconfig.json
