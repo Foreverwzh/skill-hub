@@ -4,10 +4,11 @@ import {
   SmeltBadge,
   SmeltButton,
   SmeltInputState,
+  SmeltRadio,
   SmeltTextInput,
 } from "smelt-ui";
 import { emit_event } from "smelt-plugin-api";
-import { resolveRuntime, runCli } from "./lib/bridge.js";
+import { SYNC_MODE_LABELS, resolveRuntime, runCli } from "./lib/bridge.js";
 import { selectableLine } from "./lib/ui.js";
 
 const CHANGED_EVENT = "ai.smelt.skill-hub/changed";
@@ -149,6 +150,54 @@ export default class SkillHubSettings extends View {
                     div()
                       .flex_1()
                       .child(SmeltTextInput.new(this.hubDirInput).aria_label("中枢目录").small()),
+                  ),
+              )
+              .child(
+                div()
+                  .flex()
+                  .flex_row()
+                  .flex_wrap()
+                  .items_center()
+                  .gap(8)
+                  .child(div().w(90).text_xs().text_color(c.muted_foreground).child("同步方式:"))
+                  .child(
+                    div()
+                      .flex()
+                      .flex_row()
+                      .flex_wrap()
+                      .gap(10)
+                      .children(
+                        ["auto", "copy", "link"].map((mode) =>
+                          SmeltRadio.new(`sync-mode-${mode}`)
+                            .label(SYNC_MODE_LABELS[mode])
+                            .checked((this.config.syncMode || "auto") === mode)
+                            .on_select((cx) => {
+                              cx.spawn((cx) =>
+                                this.savePayload(
+                                  cx,
+                                  { syncMode: mode },
+                                  `已将同步方式设为「${SYNC_MODE_LABELS[mode]}」（请回到「技能中心」点击「应用变更」生效）`,
+                                ),
+                              );
+                            }),
+                        ),
+                      ),
+                  ),
+              )
+              .child(
+                div()
+                  .flex()
+                  .flex_row()
+                  .gap(8)
+                  .child(div().w(90))
+                  .child(
+                    div()
+                      .flex_1()
+                      .text_xs()
+                      .text_color(c.muted_foreground)
+                      .child(
+                        "Windows 下目录 Junction 常被 Agent 扫描器跳过，推荐保持「自动」或「受管镜像副本」。",
+                      ),
                   ),
               )
               .child(

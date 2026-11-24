@@ -143,7 +143,10 @@ function outputResult(data, asJson, humanPrinter) {
 }
 
 function printHumanStatus(status) {
-  console.log(`设备: ${status.config.deviceName} | 中枢目录: ${status.config.hubDir}`);
+  const modeSuffix = status.config.syncMode === "auto" ? " (auto)" : "";
+  console.log(
+    `设备: ${status.config.deviceName} | 中枢目录: ${status.config.hubDir} | 同步方式: ${status.effectiveSyncMode || "link"}${modeSuffix}`,
+  );
   console.log(`技能源 (${status.sources.length}):`);
   for (const s of status.sources) {
     const gitTag = s.git.isGit

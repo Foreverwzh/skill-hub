@@ -1,17 +1,25 @@
 import fs from "node:fs";
 import path from "node:path";
-import { loadConfig, loadState, saveState } from "./config.mjs";
+import { loadConfig, loadState, resolveSyncMode, saveState } from "./config.mjs";
 import {
   canonicalOrResolved,
+  computeDirDigest,
   createDirLink,
   ensureDir,
   expandHome,
+  getUserHome,
   isInsideDir,
   normalizeForCompare,
+  readJsonIfExists,
+  readManagedCopyMarker,
   removeLink,
+  removeManagedCopy,
   resolveLinkTarget,
   safeLstat,
   safeRealpath,
+  safeStat,
+  writeJsonAtomic,
+  writeManagedCopy,
 } from "./paths.mjs";
 import { listHydratedSources, readSourceProfiles, scanSourceSkills } from "./sources.mjs";
 
@@ -124,15 +132,32 @@ function isOwnedLink(linkPath, stateManagedSet, ownedRoots) {
   return ownedRoots.some((root) => isInsideDir(target, root));
 }
 
+function isOwnedManagedCopy(copyPath, stateManagedCopySet, ownedRoots) {
+  const marker = readManagedCopyMarker(copyPath);
+  if (!marker) return false;
+  if (stateManagedCopySet.has(normalizeForCompare(copyPath))) {
+    return true;
+  }
+  if (marker.origin === "consolidate") {
+    return false;
+  }
+  return Boolean(
+    marker.sourceDir && ownedRoots.some((root) => isInsideDir(marker.sourceDir, root)),
+  );
+}
+
 function planDirectorySync({
   dirPath,
-  desiredEntries, // Map<dirName, targetPath>
+  desiredEntries, // Map<dirName, { targetPath, sourceDir, sourceId, skillRef, digest }>
   stateManagedSet,
+  stateManagedCopySet,
   ownedRoots,
   scopeLabel,
+  materializeMode,
 }) {
   const actions = [];
   const nextManagedLinks = [];
+  const nextManagedCopies = [];
   const dirStat = safeLstat(dirPath);
   const existingNames = new Set();
 
@@ -143,78 +168,190 @@ function planDirectorySync({
     }
   }
 
-  // 1. Ensure desired links
-  for (const [name, targetPath] of desiredEntries.entries()) {
+  // 1. Ensure desired links or managed copies
+  for (const [name, entry] of desiredEntries.entries()) {
     const linkPath = path.join(dirPath, name);
     const lst = safeLstat(linkPath);
-    const expectedCanon = canonicalOrResolved(targetPath);
+    const expectedCanon = canonicalOrResolved(entry.targetPath);
 
     if (!lst) {
       actions.push({
         type: "create",
+        materialize: materializeMode,
         scope: scopeLabel,
         name,
         linkPath,
-        targetPath,
+        targetPath: entry.targetPath,
+        sourceDir: entry.sourceDir,
+        sourceId: entry.sourceId,
+        skillRef: entry.skillRef,
+        digest: entry.digest,
       });
-      nextManagedLinks.push(linkPath);
+      if (materializeMode === "copy") {
+        nextManagedCopies.push(linkPath);
+      } else {
+        nextManagedLinks.push(linkPath);
+      }
       continue;
     }
 
-    if (!lst.isSymbolicLink()) {
-      actions.push({
-        type: "skipConflict",
-        scope: scopeLabel,
-        name,
-        linkPath,
-        targetPath,
-        reason: "目标路径存在未纳管的实体目录或文件，已跳过以避免覆盖",
-      });
+    if (lst.isSymbolicLink()) {
+      if (materializeMode === "link") {
+        const currentReal = safeRealpath(linkPath);
+        const currentCanon = currentReal ? normalizeForCompare(currentReal) : "";
+        if (currentCanon === normalizeForCompare(expectedCanon)) {
+          actions.push({
+            type: "noop",
+            materialize: "link",
+            scope: scopeLabel,
+            name,
+            linkPath,
+            targetPath: entry.targetPath,
+          });
+          nextManagedLinks.push(linkPath);
+        } else if (isOwnedLink(linkPath, stateManagedSet, ownedRoots)) {
+          actions.push({
+            type: "replace",
+            materialize: "link",
+            scope: scopeLabel,
+            name,
+            linkPath,
+            targetPath: entry.targetPath,
+            sourceDir: entry.sourceDir,
+            sourceId: entry.sourceId,
+            skillRef: entry.skillRef,
+            digest: entry.digest,
+          });
+          nextManagedLinks.push(linkPath);
+        } else {
+          actions.push({
+            type: "skipConflict",
+            scope: scopeLabel,
+            name,
+            linkPath,
+            targetPath: entry.targetPath,
+            reason: "存在指向外部目录的自定义软链，已保留未覆盖",
+          });
+        }
+      } else if (isOwnedLink(linkPath, stateManagedSet, ownedRoots)) {
+        actions.push({
+          type: "replace",
+          materialize: "copy",
+          scope: scopeLabel,
+          name,
+          linkPath,
+          targetPath: entry.targetPath,
+          sourceDir: entry.sourceDir,
+          sourceId: entry.sourceId,
+          skillRef: entry.skillRef,
+          digest: entry.digest,
+        });
+        nextManagedCopies.push(linkPath);
+      } else {
+        actions.push({
+          type: "skipConflict",
+          scope: scopeLabel,
+          name,
+          linkPath,
+          targetPath: entry.targetPath,
+          reason: "存在指向外部目录的自定义软链，已保留未覆盖",
+        });
+      }
       continue;
     }
 
-    const currentReal = safeRealpath(linkPath);
-    const currentCanon = currentReal ? normalizeForCompare(currentReal) : "";
-    if (currentCanon === normalizeForCompare(expectedCanon)) {
-      actions.push({
-        type: "noop",
-        scope: scopeLabel,
-        name,
-        linkPath,
-        targetPath,
-      });
-      nextManagedLinks.push(linkPath);
-    } else if (isOwnedLink(linkPath, stateManagedSet, ownedRoots)) {
-      actions.push({
-        type: "replace",
-        scope: scopeLabel,
-        name,
-        linkPath,
-        targetPath,
-      });
-      nextManagedLinks.push(linkPath);
-    } else {
-      actions.push({
-        type: "skipConflict",
-        scope: scopeLabel,
-        name,
-        linkPath,
-        targetPath,
-        reason: "存在指向外部目录的自定义软链，已保留未覆盖",
-      });
+    if (lst.isDirectory()) {
+      const marker = readManagedCopyMarker(linkPath);
+      if (!marker) {
+        actions.push({
+          type: "skipConflict",
+          scope: scopeLabel,
+          name,
+          linkPath,
+          targetPath: entry.targetPath,
+          reason: "目标路径存在未纳管的实体目录或文件，已跳过以避免覆盖",
+        });
+        continue;
+      }
+
+      if (materializeMode === "copy") {
+        const sourceMatches =
+          normalizeForCompare(marker.sourceDir || "") ===
+          normalizeForCompare(canonicalOrResolved(entry.sourceDir));
+        const digestMatches = marker.digest === entry.digest;
+        const hasSkillMd = Boolean(safeStat(path.join(linkPath, "SKILL.md"))?.isFile());
+
+        if (sourceMatches && digestMatches && hasSkillMd) {
+          actions.push({
+            type: "noop",
+            materialize: "copy",
+            scope: scopeLabel,
+            name,
+            linkPath,
+            targetPath: entry.targetPath,
+          });
+        } else {
+          actions.push({
+            type: "replace",
+            materialize: "copy",
+            scope: scopeLabel,
+            name,
+            linkPath,
+            targetPath: entry.targetPath,
+            sourceDir: entry.sourceDir,
+            sourceId: entry.sourceId,
+            skillRef: entry.skillRef,
+            digest: entry.digest,
+          });
+        }
+        nextManagedCopies.push(linkPath);
+      } else {
+        actions.push({
+          type: "replace",
+          materialize: "link",
+          scope: scopeLabel,
+          name,
+          linkPath,
+          targetPath: entry.targetPath,
+          sourceDir: entry.sourceDir,
+          sourceId: entry.sourceId,
+          skillRef: entry.skillRef,
+          digest: entry.digest,
+        });
+        nextManagedLinks.push(linkPath);
+      }
+      continue;
     }
+
+    actions.push({
+      type: "skipConflict",
+      scope: scopeLabel,
+      name,
+      linkPath,
+      targetPath: entry.targetPath,
+      reason: "目标路径存在未纳管的实体目录或文件，已跳过以避免覆盖",
+    });
   }
 
-  // 2. Remove stale managed links that are no longer desired
+  // 2. Remove stale managed links or managed copies that are no longer desired
   for (const name of existingNames) {
     if (desiredEntries.has(name)) continue;
     const entryPath = path.join(dirPath, name);
     const lst = safeLstat(entryPath);
-    if (!lst || !lst.isSymbolicLink()) continue;
+    if (!lst) continue;
 
-    if (isOwnedLink(entryPath, stateManagedSet, ownedRoots)) {
+    if (lst.isSymbolicLink() && isOwnedLink(entryPath, stateManagedSet, ownedRoots)) {
       actions.push({
         type: "remove",
+        materialize: "link",
+        scope: scopeLabel,
+        name,
+        linkPath: entryPath,
+      });
+    } else if (lst.isDirectory() && isOwnedManagedCopy(entryPath, stateManagedCopySet, ownedRoots)) {
+      actions.push({
+        type: "remove",
+        materialize: "copy",
         scope: scopeLabel,
         name,
         linkPath: entryPath,
@@ -222,7 +359,111 @@ function planDirectorySync({
     }
   }
 
-  return { actions, nextManagedLinks };
+  return { actions, nextManagedLinks, nextManagedCopies };
+}
+
+function planAntigravityManifest(
+  config,
+  state,
+  desired,
+  effectiveSyncMode,
+  { platform = process.platform } = {},
+) {
+  const antigravityTarget = config.targets?.antigravity;
+  const targetSkillsDir = antigravityTarget?.path
+    ? expandHome(antigravityTarget.path)
+    : path.join(getUserHome(), ".gemini", "config", "skills");
+  const manifestPath = path.join(path.dirname(targetSkillsDir), "skills.json");
+  const active =
+    platform === "win32" &&
+    effectiveSyncMode === "link" &&
+    Boolean(antigravityTarget && antigravityTarget.mode !== "disabled");
+
+  const existingManifest = readJsonIfExists(manifestPath, null);
+  const previouslyManagedSet = new Set(
+    (state.managedManifestEntries || []).map((p) => normalizeForCompare(p)),
+  );
+
+  if (!active && previouslyManagedSet.size === 0 && !existingManifest) {
+    return {
+      manifestPath,
+      changed: false,
+      nextManagedManifestEntries: [],
+      nextContent: null,
+      removeFile: false,
+    };
+  }
+
+  const desiredByNormDir = new Map();
+  if (active) {
+    const activeSkills =
+      antigravityTarget.mode === "link"
+        ? [...(desired.targetDesired.antigravity?.values() || [])].map((x) => x.skill)
+        : [...desired.hubDesired.values()];
+
+    for (const skill of activeSkills) {
+      const parentDir = path.dirname(canonicalOrResolved(skill.dir));
+      const norm = normalizeForCompare(parentDir);
+      if (!desiredByNormDir.has(norm)) {
+        desiredByNormDir.set(norm, {
+          displayPath: parentDir.replace(/\\/g, "/"),
+          dirNames: new Set(),
+        });
+      }
+      desiredByNormDir.get(norm).dirNames.add(skill.dirName);
+    }
+  }
+
+  const existingEntries = Array.isArray(existingManifest?.entries)
+    ? existingManifest.entries
+    : [];
+  const preservedEntries = [];
+  for (const entry of existingEntries) {
+    if (!entry || typeof entry !== "object" || typeof entry.path !== "string") continue;
+    const norm = normalizeForCompare(entry.path);
+    if (previouslyManagedSet.has(norm)) continue;
+    if (active && desiredByNormDir.has(norm)) continue;
+    preservedEntries.push(entry);
+  }
+
+  const managedEntries = [...desiredByNormDir.values()]
+    .sort((a, b) => a.displayPath.localeCompare(b.displayPath))
+    .map((group) => ({
+      path: group.displayPath,
+      include_only: [...group.dirNames].sort(),
+    }));
+
+  const nextManagedManifestEntries = managedEntries.map((e) => e.path);
+  const mergedEntries = [...preservedEntries, ...managedEntries];
+
+  const baseObj =
+    existingManifest && typeof existingManifest === "object" && !Array.isArray(existingManifest)
+      ? { ...existingManifest }
+      : {};
+  if (mergedEntries.length > 0) {
+    baseObj.entries = mergedEntries;
+  } else {
+    delete baseObj.entries;
+  }
+
+  if (Object.keys(baseObj).length === 0) {
+    return {
+      manifestPath,
+      changed: existingManifest !== null,
+      nextManagedManifestEntries: [],
+      nextContent: null,
+      removeFile: existingManifest !== null,
+    };
+  }
+
+  const changed = JSON.stringify(existingManifest) !== JSON.stringify(baseObj);
+  return {
+    manifestPath,
+    changed,
+    nextManagedManifestEntries,
+    nextContent: baseObj,
+    removeFile: false,
+  };
 }
 
 /**
@@ -232,31 +473,54 @@ export function planSync(
   config = loadConfig(),
   state = loadState(),
   catalog = buildSkillCatalog(config),
+  { platform = process.platform } = {},
 ) {
+  const effectiveSyncMode = resolveSyncMode(config, { platform });
   const desired = resolveDesiredState(config, catalog);
   const stateManagedSet = new Set((state.managedLinks || []).map(normalizeForCompare));
+  const stateManagedCopySet = new Set((state.managedCopies || []).map(normalizeForCompare));
   const ownedRoots = [
     ...catalog.sources.map((s) => canonicalOrResolved(s.skillsRoot)),
     ...catalog.sources.map((s) => canonicalOrResolved(s.absPath)),
   ];
 
+  const digestCache = new Map();
+  const getSkillDigest = (skillDir) => {
+    if (effectiveSyncMode !== "copy") return null;
+    const key = normalizeForCompare(skillDir);
+    if (!digestCache.has(key)) {
+      digestCache.set(key, computeDirDigest(skillDir));
+    }
+    return digestCache.get(key);
+  };
+
   const allActions = [];
   const nextManagedLinks = [];
+  const nextManagedCopies = [];
 
-  // Plan hubDir links
+  // Plan hubDir entries
   const hubDesiredMap = new Map();
   for (const [name, skill] of desired.hubDesired.entries()) {
-    hubDesiredMap.set(name, skill.dir);
+    hubDesiredMap.set(name, {
+      targetPath: skill.dir,
+      sourceDir: skill.dir,
+      sourceId: skill.sourceId,
+      skillRef: skill.ref,
+      digest: getSkillDigest(skill.dir),
+    });
   }
   const hubPlan = planDirectorySync({
     dirPath: desired.hubAbsDir,
     desiredEntries: hubDesiredMap,
     stateManagedSet,
+    stateManagedCopySet,
     ownedRoots,
     scopeLabel: "hub",
+    materializeMode: effectiveSyncMode,
   });
   allActions.push(...hubPlan.actions);
   nextManagedLinks.push(...hubPlan.nextManagedLinks);
+  nextManagedCopies.push(...hubPlan.nextManagedCopies);
 
   // Plan each link-mode target
   for (const [targetId, map] of Object.entries(desired.targetDesired)) {
@@ -264,20 +528,29 @@ export function planSync(
     const targetDir = expandHome(targetCfg.path);
     const entries = new Map();
     for (const [name, info] of map.entries()) {
-      entries.set(name, info.linkTarget);
+      entries.set(name, {
+        targetPath: info.linkTarget,
+        sourceDir: info.skill.dir,
+        sourceId: info.skill.sourceId,
+        skillRef: info.skill.ref,
+        digest: getSkillDigest(info.skill.dir),
+      });
     }
     const tPlan = planDirectorySync({
       dirPath: targetDir,
       desiredEntries: entries,
       stateManagedSet,
+      stateManagedCopySet,
       ownedRoots,
       scopeLabel: targetId,
+      materializeMode: effectiveSyncMode,
     });
     allActions.push(...tPlan.actions);
     nextManagedLinks.push(...tPlan.nextManagedLinks);
+    nextManagedCopies.push(...tPlan.nextManagedCopies);
   }
 
-  // Any previously tracked link in a target that switched to disabled/hub-only should also be cleaned up
+  // Any previously tracked link or managed copy in a target that switched to disabled/hub-only should also be cleaned up
   const plannedPaths = new Set(allActions.map((a) => normalizeForCompare(a.linkPath)));
   for (const oldLink of state.managedLinks || []) {
     if (plannedPaths.has(normalizeForCompare(oldLink))) continue;
@@ -285,12 +558,32 @@ export function planSync(
     if (lst && lst.isSymbolicLink() && isOwnedLink(oldLink, stateManagedSet, ownedRoots)) {
       allActions.push({
         type: "remove",
+        materialize: "link",
         scope: "cleanup",
         name: path.basename(oldLink),
         linkPath: oldLink,
       });
+      plannedPaths.add(normalizeForCompare(oldLink));
     }
   }
+  for (const oldCopy of state.managedCopies || []) {
+    if (plannedPaths.has(normalizeForCompare(oldCopy))) continue;
+    const lst = safeLstat(oldCopy);
+    if (lst && lst.isDirectory() && isOwnedManagedCopy(oldCopy, stateManagedCopySet, ownedRoots)) {
+      allActions.push({
+        type: "remove",
+        materialize: "copy",
+        scope: "cleanup",
+        name: path.basename(oldCopy),
+        linkPath: oldCopy,
+      });
+      plannedPaths.add(normalizeForCompare(oldCopy));
+    }
+  }
+
+  const manifestPlan = planAntigravityManifest(config, state, desired, effectiveSyncMode, {
+    platform,
+  });
 
   const actionable = allActions.filter((a) => a.type !== "noop");
   const summary = {
@@ -302,33 +595,39 @@ export function planSync(
   };
 
   return {
+    effectiveSyncMode,
     summary,
     actions: actionable,
     allActions,
     nextManagedLinks,
+    nextManagedCopies,
+    manifestPlan,
     desired,
     nameCollisions: catalog.nameCollisions,
   };
 }
 
-export function applySync({ dryRun = false } = {}) {
+export function applySync({ dryRun = false, platform = process.platform } = {}) {
   const config = loadConfig();
   const state = loadState();
   const catalog = buildSkillCatalog(config);
-  const plan = planSync(config, state, catalog);
+  const plan = planSync(config, state, catalog, { platform });
 
   if (dryRun) {
     return {
       dryRun: true,
+      effectiveSyncMode: plan.effectiveSyncMode,
       summary: plan.summary,
       actions: plan.actions,
+      manifest: plan.manifestPlan,
       nameCollisions: plan.nameCollisions,
     };
   }
 
   const applied = [];
   const errors = [];
-  const managedSet = new Set(plan.nextManagedLinks.map((p) => path.resolve(p)));
+  const managedLinkSet = new Set(plan.nextManagedLinks.map((p) => path.resolve(p)));
+  const managedCopySet = new Set(plan.nextManagedCopies.map((p) => path.resolve(p)));
 
   // Execute hub actions BEFORE target actions so target -> hub links never dangle
   const ordered = [...plan.actions].sort((a, b) => {
@@ -344,15 +643,43 @@ export function applySync({ dryRun = false } = {}) {
       }
       if (action.type === "create") {
         ensureDir(path.dirname(action.linkPath));
-        createDirLink(action.targetPath, action.linkPath);
+        if (action.materialize === "copy") {
+          writeManagedCopy(action.sourceDir, action.linkPath, {
+            sourceId: action.sourceId,
+            skillRef: action.skillRef,
+            digest: action.digest,
+          });
+        } else {
+          createDirLink(action.targetPath, action.linkPath);
+        }
         applied.push(action);
       } else if (action.type === "replace") {
-        removeLink(action.linkPath);
-        createDirLink(action.targetPath, action.linkPath);
+        if (action.materialize === "copy") {
+          writeManagedCopy(action.sourceDir, action.linkPath, {
+            sourceId: action.sourceId,
+            skillRef: action.skillRef,
+            digest: action.digest,
+          });
+        } else {
+          const curLst = safeLstat(action.linkPath);
+          if (curLst) {
+            if (curLst.isSymbolicLink()) {
+              removeLink(action.linkPath);
+            } else {
+              removeManagedCopy(action.linkPath);
+            }
+          }
+          createDirLink(action.targetPath, action.linkPath);
+        }
         applied.push(action);
       } else if (action.type === "remove") {
-        removeLink(action.linkPath);
-        managedSet.delete(path.resolve(action.linkPath));
+        if (action.materialize === "copy") {
+          removeManagedCopy(action.linkPath);
+          managedCopySet.delete(path.resolve(action.linkPath));
+        } else {
+          removeLink(action.linkPath);
+          managedLinkSet.delete(path.resolve(action.linkPath));
+        }
         applied.push(action);
       }
     } catch (err) {
@@ -360,13 +687,34 @@ export function applySync({ dryRun = false } = {}) {
     }
   }
 
-  saveState({ managedLinks: [...managedSet] });
+  if (plan.manifestPlan?.changed) {
+    try {
+      if (plan.manifestPlan.removeFile) {
+        fs.unlinkSync(plan.manifestPlan.manifestPath);
+      } else {
+        writeJsonAtomic(plan.manifestPlan.manifestPath, plan.manifestPlan.nextContent);
+      }
+    } catch (err) {
+      errors.push({
+        action: { type: "manifest", path: plan.manifestPlan.manifestPath },
+        error: err.message,
+      });
+    }
+  }
+
+  saveState({
+    managedLinks: [...managedLinkSet],
+    managedCopies: [...managedCopySet],
+    managedManifestEntries: plan.manifestPlan?.nextManagedManifestEntries || [],
+  });
 
   return {
     dryRun: false,
+    effectiveSyncMode: plan.effectiveSyncMode,
     summary: plan.summary,
     applied,
     errors,
+    manifest: plan.manifestPlan,
     nameCollisions: plan.nameCollisions,
   };
 }

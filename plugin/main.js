@@ -22,7 +22,7 @@ import {
   run,
   view_shown,
 } from "smelt-plugin-api";
-import { MODE_LABELS, TRUST_LABELS, runCli } from "./lib/bridge.js";
+import { MODE_LABELS, SYNC_MODE_LABELS, TRUST_LABELS, runCli } from "./lib/bridge.js";
 import { selectableLine } from "./lib/ui.js";
 
 const VIEW_ID = "ai.smelt.skill-hub/main";
@@ -55,7 +55,7 @@ function pillButton(id, label, active, onClick) {
 function coverageSummary(skill) {
   const parts = [];
   for (const cov of skill.coverage || []) {
-    if (cov.status === "linked") parts.push(`${cov.label}:✓`);
+    if (cov.status === "linked" || cov.status === "copied") parts.push(`${cov.label}:✓`);
     else if (cov.status === "via-hub") parts.push(`${cov.label}:中枢`);
     else if (cov.status === "pending") parts.push(`${cov.label}:待建`);
     else if (cov.status === "pending-remove") parts.push(`${cov.label}:待删`);
@@ -2298,13 +2298,17 @@ export default class SkillHubView extends View {
             div()
               .text_sm()
               .font_semibold()
-              .child(`本机 Agent 目标工具（设备名: ${status.config.deviceName} · 中枢: ${status.config.hubDir}）`),
+              .child(
+                `本机 Agent 目标工具（设备名: ${status.config.deviceName} · 中枢: ${status.config.hubDir} · 同步: ${SYNC_MODE_LABELS[status.effectiveSyncMode] || status.effectiveSyncMode || "link"}）`,
+              ),
           )
           .child(
             div()
               .text_xs()
               .text_color(c.muted_foreground)
-              .child("「建软链」会在该工具目录建立独立软链/Junction（支持单工具差异化开关）；「仅读中枢」表示由该工具直接读取 ~/.agents/skills，避免重复加载。"),
+              .child(
+                "「独立挂载」在 macOS/Linux 建立软链、在 Windows 默认建立受管镜像副本（避免 Junction 被扫描器跳过，支持单工具差异化开关）；「仅读中枢」表示由该工具直接读取 ~/.agents/skills，避免重复加载。",
+              ),
           )
           .children(
             targets.map((t) =>

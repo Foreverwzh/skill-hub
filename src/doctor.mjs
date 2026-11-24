@@ -1,5 +1,5 @@
 import path from "node:path";
-import { loadConfig, loadGuardConfig, loadState, saveConfig } from "./config.mjs";
+import { loadConfig, loadGuardConfig, loadState, resolveSyncMode, saveConfig } from "./config.mjs";
 import { scanAllCopies } from "./consolidate.mjs";
 import { isGitRepo } from "./git.mjs";
 import { hasPrePushHook, scanDirectoryForLeaks } from "./guard.mjs";
@@ -7,11 +7,14 @@ import {
   createDirLink,
   ensureDir,
   expandHome,
+  isInsideDir,
+  isManagedCopyDir,
   moveDir,
   normalizeForCompare,
   removeLink,
   safeLstat,
   safeStat,
+  writeManagedCopy,
 } from "./paths.mjs";
 import {
   getSourceById,
@@ -64,6 +67,9 @@ export function adoptSkill({ skillPath, targetSourceId, enable = true }) {
   if (!lst || !lst.isDirectory() || lst.isSymbolicLink()) {
     throw new Error(`只能纳管本地实体技能目录（收到: ${absSkillPath}）`);
   }
+  if (isManagedCopyDir(absSkillPath)) {
+    throw new Error(`该路径是 skill-hub 受管镜像副本，请直接在对应源仓库中编辑: ${absSkillPath}`);
+  }
   const mdSt = safeStat(path.join(absSkillPath, "SKILL.md"));
   if (!mdSt || !mdSt.isFile()) {
     throw new Error(`目录缺少 SKILL.md，不是有效技能: ${absSkillPath}`);
@@ -105,6 +111,30 @@ export function adoptSkill({ skillPath, targetSourceId, enable = true }) {
     }
     config.exclude = config.exclude.filter((x) => x !== ref && x !== dirName);
     saveConfig(config);
+
+    const effectiveSyncMode = resolveSyncMode(config);
+    if (effectiveSyncMode === "copy") {
+      const syncRes = applySync();
+      const hubOnlyDirs = Object.values(config.targets || {})
+        .filter((t) => t.mode === "hub-only")
+        .map((t) => expandHome(t.path));
+      const inHubOnlyTarget = hubOnlyDirs.some((d) => isInsideDir(absSkillPath, d));
+      if (!safeLstat(absSkillPath) && !inHubOnlyTarget) {
+        writeManagedCopy(destDir, absSkillPath, {
+          sourceId: targetSource.id,
+          skillRef: ref,
+          origin: "consolidate",
+        });
+      }
+      return {
+        ok: true,
+        dirName,
+        destDir,
+        targetSourceId,
+        enabled: true,
+        sync: syncRes,
+      };
+    }
 
     // Replace original path immediately (sync will also reconcile targets)
     if (adoptedFromHub) {

@@ -28,8 +28,15 @@ import {
   updateSettings,
   updateTarget,
 } from "../src/api.mjs";
-import { saveConfig } from "../src/config.mjs";
-import { createDirLink, safeLstat, safeRealpath } from "../src/paths.mjs";
+import { resolveSyncMode, saveConfig } from "../src/config.mjs";
+import {
+  createDirLink,
+  isManagedCopyDir,
+  readManagedCopyMarker,
+  safeLstat,
+  safeRealpath,
+} from "../src/paths.mjs";
+import { planSync } from "../src/sync.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CLI_PATH = path.resolve(__dirname, "..", "bin", "skill-hub.mjs");
@@ -70,12 +77,14 @@ beforeEach(() => {
 afterEach(() => {
   delete process.env.SKILL_HUB_USER_HOME;
   delete process.env.SKILL_HUB_HOME;
+  delete process.env.SKILL_HUB_SYNC_MODE;
   if (tmpRoot && fs.existsSync(tmpRoot)) {
     fs.rmSync(tmpRoot, { recursive: true, force: true });
   }
 });
 
 test("multi-source isolation, profiles, per-target overrides, and non-destructive cleanup", () => {
+  process.env.SKILL_HUB_SYNC_MODE = "link";
   const personalDir = path.join(tmpRoot, "sources", "personal");
   const companyDir = path.join(tmpRoot, "sources", "company");
   const localDir = path.join(tmpRoot, "sources", "local-only");
@@ -213,6 +222,7 @@ test("4-layer leak guard blocks internal->github remote, github sensitive leaks,
 });
 
 test("local -> internal conversion, doctor, adopt with leak guard, cross-source move, and broken link cleanup", () => {
+  process.env.SKILL_HUB_SYNC_MODE = "link";
   const pubDir = path.join(tmpRoot, "sources", "pub");
   const draftDir = path.join(tmpRoot, "sources", "drafts");
   addSource({ id: "pub", name: "GitHub", path: pubDir, trust: "github" });
@@ -322,6 +332,7 @@ test("CLI end-to-end --json execution and non-invasive status on fresh home", ()
 });
 
 test("consolidate unifies scattered skills & legacy .smelt/skills into .agents hub, repairs bridges, and resolves conflicts to trash", () => {
+  process.env.SKILL_HUB_SYNC_MODE = "link";
   const hubDir = path.join(userHome, ".agents", "skills");
   const claudeDir = path.join(userHome, ".claude", "skills");
   const antigravityDir = path.join(userHome, ".gemini", "config", "skills");
@@ -409,6 +420,7 @@ test("consolidate unifies scattered skills & legacy .smelt/skills into .agents h
 });
 
 test("CLI consolidate --dry-run, consolidate, and resolve-conflict --json", () => {
+  process.env.SKILL_HUB_SYNC_MODE = "link";
   const hubDir = path.join(userHome, ".agents", "skills");
   const claudeDir = path.join(userHome, ".claude", "skills");
   const codexDir = path.join(userHome, ".codex", "skills");
@@ -643,4 +655,286 @@ test("profile CLI supports empty creation, add-skill, remove-skill, clearing wit
   );
   assert.equal("gamedev" in profilesDisk, false);
   assert.equal(getFullStatus().config.enabledProfiles.includes("personal:gamedev"), false);
+});
+
+test("resolveSyncMode defaults and explicit overrides", () => {
+  assert.equal(resolveSyncMode({ syncMode: "auto" }, { platform: "win32" }), "copy");
+  assert.equal(resolveSyncMode({ syncMode: "auto" }, { platform: "darwin" }), "link");
+  assert.equal(resolveSyncMode({ syncMode: "auto" }, { platform: "linux" }), "link");
+
+  process.env.SKILL_HUB_SYNC_MODE = "link";
+  assert.equal(resolveSyncMode({ syncMode: "auto" }, { platform: "win32" }), "link");
+  assert.equal(resolveSyncMode({ syncMode: "copy" }, { platform: "darwin" }), "copy");
+
+  process.env.SKILL_HUB_SYNC_MODE = "copy";
+  assert.equal(resolveSyncMode({ syncMode: "link" }, { platform: "win32" }), "link");
+
+  assert.throws(() => updateSettings({ syncMode: "invalid-mode" }), /非法同步方式/);
+});
+
+test("copy mode lifecycle, digest drift detection, non-destructive protection, doctor & status", () => {
+  updateSettings({ syncMode: "copy" });
+  updateTarget({ id: "cursor", mode: "link" });
+
+  const personalDir = path.join(tmpRoot, "sources", "personal");
+  addSource({ id: "personal", name: "个人", path: personalDir, trust: "github" });
+  const srcA = writeSkill(path.join(personalDir, "skills"), "skill-a", {
+    description: "Skill A v1",
+    extraFiles: { "scripts/run.js": "console.log('v1');\n" },
+  });
+  writeSkill(path.join(personalDir, "skills"), "skill-b", { description: "Skill B" });
+
+  // Unmanaged real directory, colliding real directory, and external symlink MUST NOT be overwritten or deleted
+  const unmanagedClaude = writeSkill(path.join(userHome, ".claude", "skills"), "unmanaged-real");
+  const collidingCursor = writeSkill(path.join(userHome, ".cursor", "skills"), "skill-a", {
+    description: "User local cursor copy",
+  });
+  const externalSkill = writeSkill(path.join(tmpRoot, "external"), "third-party");
+  const externalLink = path.join(userHome, ".claude", "skills", "third-party");
+  createDirLink(externalSkill, externalLink);
+
+  toggleSkill({ skillRef: "personal:skill-a", enabled: true });
+  toggleSkill({ skillRef: "personal:skill-b", enabled: true });
+
+  const sync1 = applySync();
+  assert.equal(sync1.effectiveSyncMode, "copy");
+  assert.equal(sync1.errors.length, 0);
+  assert.equal(sync1.summary.conflicts, 1);
+
+  const hubA = path.join(userHome, ".agents", "skills", "skill-a");
+  const claudeA = path.join(userHome, ".claude", "skills", "skill-a");
+  const agyA = path.join(userHome, ".gemini", "config", "skills", "skill-a");
+
+  for (const dir of [hubA, claudeA, agyA]) {
+    const lst = safeLstat(dir);
+    assert.ok(lst?.isDirectory());
+    assert.equal(lst?.isSymbolicLink(), false);
+    assert.equal(isManagedCopyDir(dir), true);
+    assert.equal(
+      fs.readFileSync(path.join(dir, "scripts", "run.js"), "utf8"),
+      "console.log('v1');\n",
+    );
+  }
+  assert.equal(readManagedCopyMarker(hubA)?.skillRef, "personal:skill-a");
+
+  // Colliding real directory in cursor stays intact and unmanaged
+  assert.equal(isManagedCopyDir(collidingCursor), false);
+  assert.equal(
+    fs.readFileSync(path.join(collidingCursor, "SKILL.md"), "utf8").includes("User local cursor copy"),
+    true,
+  );
+
+  // Second sync is a complete noop
+  const syncNoop = applySync();
+  assert.equal(syncNoop.summary.create, 0);
+  assert.equal(syncNoop.summary.replace, 0);
+  assert.equal(syncNoop.summary.remove, 0);
+
+  // Status & doctor do not misclassify managed copies as unmanaged or conflicts
+  const status = getFullStatus();
+  assert.equal(status.effectiveSyncMode, "copy");
+  const stA = status.skills.find((s) => s.dirName === "skill-a");
+  const stB = status.skills.find((s) => s.dirName === "skill-b");
+  assert.equal(stA.coverage.find((c) => c.targetId === "claude")?.status, "copied");
+  assert.equal(stA.coverage.find((c) => c.targetId === "codex")?.status, "via-hub");
+  assert.equal(stA.coverage.find((c) => c.targetId === "cursor")?.status, "conflict");
+  assert.equal(stB.coverage.find((c) => c.targetId === "claude")?.status, "copied");
+  assert.equal(
+    status.doctor.unmanaged.some((u) => u.dirName === "skill-b"),
+    false,
+  );
+  assert.deepEqual(
+    status.doctor.unmanaged.map((u) => u.dirName).sort(),
+    ["skill-a", "unmanaged-real"],
+  );
+
+  // Source edit triggers digest drift and updates all managed copies
+  fs.writeFileSync(path.join(srcA, "scripts", "run.js"), "console.log('v2');\n", "utf8");
+  const driftPlan = planSync();
+  assert.equal(driftPlan.summary.replace, 3);
+  const syncDrift = applySync();
+  assert.equal(syncDrift.errors.length, 0);
+  assert.equal(
+    fs.readFileSync(path.join(claudeA, "scripts", "run.js"), "utf8"),
+    "console.log('v2');\n",
+  );
+  assert.equal(applySync().summary.totalPending, 0);
+
+  // Disabling skill-b removes only managed copies, leaving unmanaged items intact
+  toggleSkill({ skillRef: "personal:skill-b", enabled: false });
+  const syncDisable = applySync();
+  assert.equal(syncDisable.errors.length, 0);
+  assert.equal(safeLstat(path.join(userHome, ".agents", "skills", "skill-b")), null);
+  assert.equal(safeLstat(path.join(userHome, ".claude", "skills", "skill-b")), null);
+  assert.equal(safeLstat(path.join(userHome, ".gemini", "config", "skills", "skill-b")), null);
+  assert.ok(safeLstat(unmanagedClaude)?.isDirectory());
+  assert.ok(safeLstat(externalLink)?.isSymbolicLink());
+  assert.ok(safeLstat(collidingCursor)?.isDirectory());
+});
+
+test("seamless migration between link and copy modes", () => {
+  const personalDir = path.join(tmpRoot, "sources", "personal");
+  addSource({ id: "personal", name: "个人", path: personalDir, trust: "github" });
+  writeSkill(path.join(personalDir, "skills"), "skill-a");
+  toggleSkill({ skillRef: "personal:skill-a", enabled: true });
+
+  const unmanagedKeep = writeSkill(path.join(userHome, ".claude", "skills"), "keep-me");
+  const externalSkill = writeSkill(path.join(tmpRoot, "external"), "ext-skill");
+  const externalLink = path.join(userHome, ".claude", "skills", "ext-skill");
+  createDirLink(externalSkill, externalLink);
+
+  // Start in link mode
+  updateSettings({ syncMode: "link" });
+  const linkRes = applySync();
+  assert.equal(linkRes.errors.length, 0);
+  const pathsToCheck = [
+    path.join(userHome, ".agents", "skills", "skill-a"),
+    path.join(userHome, ".claude", "skills", "skill-a"),
+    path.join(userHome, ".gemini", "config", "skills", "skill-a"),
+  ];
+  for (const p of pathsToCheck) {
+    assert.ok(safeLstat(p)?.isSymbolicLink());
+  }
+
+  // Migrate link -> copy
+  updateSettings({ syncMode: "copy" });
+  const toCopyRes = applySync();
+  assert.equal(toCopyRes.errors.length, 0);
+  assert.equal(toCopyRes.summary.replace, 3);
+  for (const p of pathsToCheck) {
+    const lst = safeLstat(p);
+    assert.ok(lst?.isDirectory());
+    assert.equal(lst?.isSymbolicLink(), false);
+    assert.equal(isManagedCopyDir(p), true);
+  }
+  assert.ok(safeLstat(unmanagedKeep)?.isDirectory());
+  assert.ok(safeLstat(externalLink)?.isSymbolicLink());
+
+  // Migrate copy -> link
+  updateSettings({ syncMode: "link" });
+  const toLinkRes = applySync();
+  assert.equal(toLinkRes.errors.length, 0);
+  assert.equal(toLinkRes.summary.replace, 3);
+  for (const p of pathsToCheck) {
+    assert.ok(safeLstat(p)?.isSymbolicLink());
+    assert.equal(isManagedCopyDir(p), false);
+  }
+  assert.ok(safeLstat(unmanagedKeep)?.isDirectory());
+  assert.ok(safeLstat(externalLink)?.isSymbolicLink());
+});
+
+test("consolidate, drift refresh, and adoptSkill in copy mode", () => {
+  updateSettings({ syncMode: "copy" });
+
+  const hubDir = path.join(userHome, ".agents", "skills");
+  const claudeDir = path.join(userHome, ".claude", "skills");
+  const agyDir = path.join(userHome, ".gemini", "config", "skills");
+  const codexDir = path.join(userHome, ".codex", "skills");
+
+  const hubSkill = writeSkill(hubDir, "hub-skill", { description: "Hub v1" });
+  writeSkill(codexDir, "codex-skill", { description: "From codex" });
+  writeSkill(claudeDir, "claude-skill", { description: "From claude" });
+
+  const personalDir = path.join(tmpRoot, "sources", "personal");
+  addSource({ id: "personal", name: "个人", path: personalDir, trust: "github" });
+  writeSkill(path.join(personalDir, "skills"), "managed-a");
+  writeSkill(path.join(personalDir, "skills"), "managed-skip-claude");
+  toggleSkill({ skillRef: "personal:managed-a", enabled: true });
+  toggleSkill({ skillRef: "personal:managed-skip-claude", enabled: true });
+  toggleSkill({ skillRef: "personal:managed-skip-claude", enabled: false, targetId: "claude" });
+  applySync();
+
+  const consRes = applyConsolidate();
+  assert.equal(consRes.errors.length, 0);
+
+  for (const name of ["hub-skill", "codex-skill", "claude-skill"]) {
+    assert.ok(safeLstat(path.join(hubDir, name))?.isDirectory());
+    assert.equal(isManagedCopyDir(path.join(hubDir, name)), false);
+    for (const targetDir of [claudeDir, agyDir]) {
+      const dst = path.join(targetDir, name);
+      assert.equal(isManagedCopyDir(dst), true);
+      assert.equal(readManagedCopyMarker(dst)?.origin, "consolidate");
+    }
+  }
+  // Managed skill excluded for claude is NOT copied to claude
+  assert.equal(safeLstat(path.join(claudeDir, "managed-skip-claude")), null);
+
+  // Subsequent planConsolidate and applySync remain clean and preserve consolidate copies
+  assert.equal(planConsolidate().summary.totalActions, 0);
+  const syncAfter = applySync();
+  assert.equal(syncAfter.summary.remove, 0);
+  assert.equal(isManagedCopyDir(path.join(claudeDir, "codex-skill")), true);
+
+  // Editing hub-skill triggers planConsolidate drift refresh
+  fs.writeFileSync(path.join(hubSkill, "SKILL.md"), "---\nname: hub-skill\ndescription: Hub v2\n---\n", "utf8");
+  const driftCons = planConsolidate();
+  assert.equal(driftCons.summary.toRelink, 2);
+  applyConsolidate();
+  assert.equal(
+    fs.readFileSync(path.join(claudeDir, "hub-skill", "SKILL.md"), "utf8").includes("Hub v2"),
+    true,
+  );
+
+  // adoptSkill in copy mode creates managed copies and refuses adopting a managed copy
+  const adopted = adoptSkill({ skillPath: path.join(hubDir, "codex-skill"), targetSourceId: "personal" });
+  assert.equal(adopted.ok, true);
+  assert.equal(isManagedCopyDir(path.join(hubDir, "codex-skill")), true);
+  assert.equal(isManagedCopyDir(path.join(claudeDir, "codex-skill")), true);
+  assert.throws(
+    () => adoptSkill({ skillPath: path.join(claudeDir, "codex-skill"), targetSourceId: "personal" }),
+    /受管镜像副本/,
+  );
+});
+
+test("Windows link-mode Antigravity skills.json manifest sync and cleanup", () => {
+  const manifestPath = path.join(userHome, ".gemini", "config", "skills.json");
+  fs.writeFileSync(
+    manifestPath,
+    JSON.stringify(
+      {
+        exclude: ["legacy-ignored"],
+        entries: [{ path: "C:/custom/my-skills" }],
+      },
+      null,
+      2,
+    ),
+    "utf8",
+  );
+
+  const personalDir = path.join(tmpRoot, "sources", "personal");
+  addSource({ id: "personal", name: "个人", path: personalDir, trust: "github" });
+  writeSkill(path.join(personalDir, "skills"), "skill-a");
+  writeSkill(path.join(personalDir, "skills"), "skill-b");
+
+  toggleSkill({ skillRef: "personal:skill-a", enabled: true });
+  toggleSkill({ skillRef: "personal:skill-b", enabled: true });
+  toggleSkill({ skillRef: "personal:skill-b", enabled: false, targetId: "antigravity" });
+
+  updateSettings({ syncMode: "link" });
+  const linkSync = applySync({ platform: "win32" });
+  assert.equal(linkSync.errors.length, 0);
+
+  const manifestAfterLink = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+  assert.deepEqual(manifestAfterLink.exclude, ["legacy-ignored"]);
+  assert.equal(manifestAfterLink.entries.length, 2);
+  assert.equal(manifestAfterLink.entries[0].path, "C:/custom/my-skills");
+  assert.deepEqual(manifestAfterLink.entries[1].include_only, ["skill-a"]);
+
+  // Switching to copy mode removes only managed entries and keeps user entries
+  updateSettings({ syncMode: "copy" });
+  const copySync = applySync({ platform: "win32" });
+  assert.equal(copySync.errors.length, 0);
+
+  const manifestAfterCopy = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+  assert.deepEqual(manifestAfterCopy.exclude, ["legacy-ignored"]);
+  assert.deepEqual(manifestAfterCopy.entries, [{ path: "C:/custom/my-skills" }]);
+
+  // When skills.json has no user entries, switching to copy removes empty skills.json cleanly
+  fs.unlinkSync(manifestPath);
+  updateSettings({ syncMode: "link" });
+  applySync({ platform: "win32" });
+  assert.equal(fs.existsSync(manifestPath), true);
+  updateSettings({ syncMode: "copy" });
+  applySync({ platform: "win32" });
+  assert.equal(fs.existsSync(manifestPath), false);
 });

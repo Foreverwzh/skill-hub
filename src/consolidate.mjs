@@ -1,23 +1,28 @@
 import fs from "node:fs";
 import path from "node:path";
-import { loadConfig } from "./config.mjs";
+import { loadConfig, resolveSyncMode } from "./config.mjs";
 import {
   canonicalOrResolved,
+  computeDirDigest,
   createDirLink,
   ensureDir,
   expandHome,
   getHubConfigDir,
   getUserHome,
   isInsideDir,
+  isManagedCopyDir,
   moveDir,
   moveIntoDir,
   normalizeForCompare,
+  readManagedCopyMarker,
   removeIfEmptyDir,
   removeLink,
+  removeManagedCopy,
   resolveLinkTarget,
   safeLstat,
   safeRealpath,
   safeStat,
+  writeManagedCopy,
 } from "./paths.mjs";
 import { parseSkillFrontmatter } from "./sources.mjs";
 import { applySync, buildSkillCatalog, resolveDesiredState } from "./sync.mjs";
@@ -100,17 +105,18 @@ function scanSingleLocation(loc, ownedSourceRoots) {
   const symlinks = [];
   const externalLinks = [];
   const brokenLinks = [];
+  const managedCopies = [];
 
   const dirSt = safeLstat(loc.dir);
   if (!dirSt || !dirSt.isDirectory()) {
-    return { realSkills, symlinks, externalLinks, brokenLinks };
+    return { realSkills, symlinks, externalLinks, brokenLinks, managedCopies };
   }
 
   let entries;
   try {
     entries = fs.readdirSync(loc.dir);
   } catch {
-    return { realSkills, symlinks, externalLinks, brokenLinks };
+    return { realSkills, symlinks, externalLinks, brokenLinks, managedCopies };
   }
 
   for (const name of entries) {
@@ -153,6 +159,22 @@ function scanSingleLocation(loc, ownedSourceRoots) {
     }
 
     if (lst.isDirectory()) {
+      const marker = readManagedCopyMarker(fullPath);
+      if (marker) {
+        managedCopies.push({
+          dirName: name,
+          path: fullPath,
+          sourceDir: marker.sourceDir || "",
+          sourceId: marker.sourceId || "",
+          skillRef: marker.skillRef || "",
+          digest: marker.digest || "",
+          origin: marker.origin || "sync",
+          locationId: loc.id,
+          locationLabel: loc.label,
+        });
+        continue;
+      }
+
       const mdPath = path.join(fullPath, "SKILL.md");
       const mdSt = safeStat(mdPath);
       if (!mdSt || !mdSt.isFile()) continue;
@@ -178,7 +200,7 @@ function scanSingleLocation(loc, ownedSourceRoots) {
     }
   }
 
-  return { realSkills, symlinks, externalLinks, brokenLinks };
+  return { realSkills, symlinks, externalLinks, brokenLinks, managedCopies };
 }
 
 /**
@@ -195,6 +217,7 @@ export function scanAllCopies(config = loadConfig()) {
   const realByCanon = new Map();
   const copiesByName = new Map();
   const allSymlinks = [];
+  const allManagedCopies = [];
   const brokenLinks = [];
   const hubEntries = new Map(); // dirName -> { dirName, isManagedSource, targetPath }
 
@@ -202,6 +225,7 @@ export function scanAllCopies(config = loadConfig()) {
     const res = scanSingleLocation(loc, ownedSourceRoots);
     brokenLinks.push(...res.brokenLinks);
     allSymlinks.push(...res.symlinks);
+    allManagedCopies.push(...res.managedCopies);
 
     for (const item of res.realSkills) {
       const key = normalizeForCompare(item.canonicalPath);
@@ -245,6 +269,18 @@ export function scanAllCopies(config = loadConfig()) {
             dirName: link.dirName,
             isManagedSource: isManaged,
             targetPath: link.path,
+          });
+        }
+      }
+      for (const copy of res.managedCopies) {
+        const isManaged = Boolean(
+          copy.sourceDir && ownedSourceRoots.some((root) => isInsideDir(copy.sourceDir, root)),
+        );
+        if (!hubEntries.has(copy.dirName)) {
+          hubEntries.set(copy.dirName, {
+            dirName: copy.dirName,
+            isManagedSource: isManaged,
+            targetPath: copy.path,
           });
         }
       }
@@ -314,6 +350,7 @@ export function scanAllCopies(config = loadConfig()) {
     unmanaged,
     brokenLinks,
     allSymlinks,
+    allManagedCopies,
     hubEntries,
     conflicts,
     scattered,
@@ -322,12 +359,13 @@ export function scanAllCopies(config = loadConfig()) {
 
 /**
  * Computes a deterministic, previewable plan to consolidate scattered real skills into
- * `.agents/skills` and create missing symlinks/junctions for `link`-mode targets.
+ * `.agents/skills` and create missing symlinks/junctions or managed copies for `link`-mode targets.
  */
 export function planConsolidate(
   config = loadConfig(),
   { skillNames = null, repairBridges = true } = {},
 ) {
+  const effectiveSyncMode = resolveSyncMode(config);
   const scan = scanAllCopies(config);
   const desired = resolveDesiredState(config, scan.catalog);
   const filterSet =
@@ -338,13 +376,21 @@ export function planConsolidate(
   const movingFromSet = new Set();
   const movedNames = new Set();
   const plannedTargetLinks = new Set();
+  const digestCache = new Map();
+  const getCachedDigest = (dirPath) => {
+    const key = normalizeForCompare(dirPath);
+    if (!digestCache.has(key)) {
+      digestCache.set(key, computeDirDigest(dirPath));
+    }
+    return digestCache.get(key);
+  };
 
   // Step A: Move scattered real directories into hubDir
   for (const item of scan.scattered) {
     if (filterSet && !filterSet.has(item.dirName)) continue;
     const hubDest = path.join(scan.hubAbsDir, item.dirName);
     const destLst = safeLstat(hubDest);
-    if (destLst && !destLst.isSymbolicLink()) {
+    if (destLst && !destLst.isSymbolicLink() && !isManagedCopyDir(hubDest)) {
       continue;
     }
 
@@ -355,6 +401,7 @@ export function planConsolidate(
       to: hubDest,
       fromLabel: item.locationLabel,
       replaceBrokenLinkAtDest: Boolean(destLst && destLst.isSymbolicLink()),
+      replaceManagedCopyAtDest: Boolean(destLst && !destLst.isSymbolicLink() && isManagedCopyDir(hubDest)),
       description: `迁移到 ${config.hubDir}: ${item.path} -> ${hubDest}`,
     });
     movingFromSet.add(normalizeForCompare(item.path));
@@ -367,18 +414,26 @@ export function planConsolidate(
       if (normalizeForCompare(link.path) === normalizeForCompare(hubDest)) continue;
       actions.push({
         type: "relink",
+        materialize: effectiveSyncMode,
         dirName: link.dirName,
         at: link.path,
         to: hubDest,
+        sourceDir: hubDest,
+        sourceId: null,
+        skillRef: null,
+        origin: "consolidate",
         targetId: link.locationId,
         targetLabel: link.locationLabel,
-        description: `重指已有软链 (${link.locationLabel}): ${link.path} -> ${hubDest}`,
+        description:
+          effectiveSyncMode === "copy"
+            ? `迁移副本到目标 (${link.locationLabel}): ${link.path} <- ${hubDest}`
+            : `重指已有软链 (${link.locationLabel}): ${link.path} -> ${hubDest}`,
       });
       plannedTargetLinks.add(normalizeForCompare(link.path));
     }
   }
 
-  // Step B: Create/repair symlinks in link-mode targets for all non-conflicted hub skills
+  // Step B: Create/repair symlinks or managed copies in link-mode targets for all non-conflicted hub skills
   if (repairBridges) {
     const candidateNames = new Set([
       ...scan.hubEntries.keys(),
@@ -400,6 +455,14 @@ export function planConsolidate(
       const hubEntry = scan.hubEntries.get(dirName);
       const isManaged = Boolean(hubEntry?.isManagedSource);
       const hubDest = path.join(scan.hubAbsDir, dirName);
+      const managedSkill = isManaged ? scan.catalog.byDirName.get(dirName) : null;
+      const expectedSourceDir = managedSkill ? managedSkill.dir : hubDest;
+      const copyMeta = {
+        sourceDir: expectedSourceDir,
+        sourceId: managedSkill?.sourceId || null,
+        skillRef: managedSkill?.ref || null,
+        origin: isManaged ? "sync" : "consolidate",
+      };
 
       for (const target of linkTargets) {
         // Respect managed skill exclusions/disables
@@ -417,16 +480,21 @@ export function planConsolidate(
             : hubDest;
 
         // If Step A is moving a real directory OUT of this exact linkAt path,
-        // Step B will safely place a symlink in its spot right afterward.
+        // Step B will safely place a symlink or managed copy in its spot right afterward.
         if (movingFromSet.has(normAt)) {
           actions.push({
             type: "link",
+            materialize: effectiveSyncMode,
             dirName,
             at: linkAt,
             to: expectedTarget,
+            ...copyMeta,
             targetId: target.id,
             targetLabel: target.label,
-            description: `为 ${target.label} 建软链: ${linkAt} -> ${expectedTarget}`,
+            description:
+              effectiveSyncMode === "copy"
+                ? `为 ${target.label} 同步镜像副本: ${linkAt} <- ${expectedSourceDir}`
+                : `为 ${target.label} 建软链: ${linkAt} -> ${expectedTarget}`,
           });
           plannedTargetLinks.add(normAt);
           continue;
@@ -436,29 +504,88 @@ export function planConsolidate(
         if (!lst) {
           actions.push({
             type: "link",
+            materialize: effectiveSyncMode,
             dirName,
             at: linkAt,
             to: expectedTarget,
+            ...copyMeta,
             targetId: target.id,
             targetLabel: target.label,
-            description: `为 ${target.label} 建软链: ${linkAt} -> ${expectedTarget}`,
+            description:
+              effectiveSyncMode === "copy"
+                ? `为 ${target.label} 同步镜像副本: ${linkAt} <- ${expectedSourceDir}`
+                : `为 ${target.label} 建软链: ${linkAt} -> ${expectedTarget}`,
           });
           plannedTargetLinks.add(normAt);
         } else if (lst.isSymbolicLink()) {
-          const curReal = safeRealpath(linkAt);
-          const expectedCanon = canonicalTargetPath(expectedTarget);
-          const curCanon = curReal ? normalizeForCompare(curReal) : "";
-          if (curCanon !== normalizeForCompare(expectedCanon)) {
+          if (effectiveSyncMode === "copy") {
             actions.push({
               type: "relink",
+              materialize: "copy",
               dirName,
               at: linkAt,
               to: expectedTarget,
+              ...copyMeta,
+              targetId: target.id,
+              targetLabel: target.label,
+              description: `为 ${target.label} 切换为镜像副本: ${linkAt} <- ${expectedSourceDir}`,
+            });
+            plannedTargetLinks.add(normAt);
+          } else {
+            const curReal = safeRealpath(linkAt);
+            const expectedCanon = canonicalTargetPath(expectedTarget);
+            const curCanon = curReal ? normalizeForCompare(curReal) : "";
+            if (curCanon !== normalizeForCompare(expectedCanon)) {
+              actions.push({
+                type: "relink",
+                materialize: "link",
+                dirName,
+                at: linkAt,
+                to: expectedTarget,
+                ...copyMeta,
+                targetId: target.id,
+                targetLabel: target.label,
+                description: `修复 ${target.label} 软链: ${linkAt} -> ${expectedTarget}`,
+              });
+              plannedTargetLinks.add(normAt);
+            }
+          }
+        } else if (isManagedCopyDir(linkAt)) {
+          if (effectiveSyncMode === "link") {
+            actions.push({
+              type: "relink",
+              materialize: "link",
+              dirName,
+              at: linkAt,
+              to: expectedTarget,
+              ...copyMeta,
               targetId: target.id,
               targetLabel: target.label,
               description: `修复 ${target.label} 软链: ${linkAt} -> ${expectedTarget}`,
             });
             plannedTargetLinks.add(normAt);
+          } else {
+            const marker = readManagedCopyMarker(linkAt);
+            const sourceMatches =
+              normalizeForCompare(marker?.sourceDir || "") ===
+              normalizeForCompare(canonicalTargetPath(expectedSourceDir));
+            const sourceExists = Boolean(safeStat(expectedSourceDir)?.isDirectory());
+            const digestMatches = sourceExists && marker?.digest === getCachedDigest(expectedSourceDir);
+            const hasSkillMd = Boolean(safeStat(path.join(linkAt, "SKILL.md"))?.isFile());
+            if (!sourceMatches || !digestMatches || !hasSkillMd) {
+              actions.push({
+                type: "relink",
+                materialize: "copy",
+                dirName,
+                at: linkAt,
+                to: expectedTarget,
+                ...copyMeta,
+                targetId: target.id,
+                targetLabel: target.label,
+                description: `更新 ${target.label} 镜像副本: ${linkAt} <- ${expectedSourceDir}`,
+              });
+              plannedTargetLinks.add(normAt);
+            }
           }
         }
       }
@@ -538,29 +665,52 @@ export function applyConsolidate({
         if (action.replaceBrokenLinkAtDest) {
           const destLst = safeLstat(action.to);
           if (destLst && destLst.isSymbolicLink()) removeLink(action.to);
+        } else if (action.replaceManagedCopyAtDest) {
+          if (isManagedCopyDir(action.to)) removeManagedCopy(action.to);
         }
         moveDir(action.from, action.to);
         applied.push(action);
       } else if (action.type === "relink") {
-        const curLst = safeLstat(action.at);
-        if (curLst) {
-          if (!curLst.isSymbolicLink()) {
-            throw new Error(`目标位置已存在非软链目录，拒绝覆盖: ${action.at}`);
+        if (action.materialize === "copy") {
+          writeManagedCopy(action.sourceDir || action.to, action.at, {
+            sourceId: action.sourceId || null,
+            skillRef: action.skillRef || null,
+            origin: action.origin || "consolidate",
+          });
+        } else {
+          const curLst = safeLstat(action.at);
+          if (curLst) {
+            if (curLst.isSymbolicLink()) {
+              removeLink(action.at);
+            } else if (isManagedCopyDir(action.at)) {
+              removeManagedCopy(action.at);
+            } else {
+              throw new Error(`目标位置已存在非软链目录，拒绝覆盖: ${action.at}`);
+            }
           }
-          removeLink(action.at);
+          createDirLink(action.to, action.at);
         }
-        createDirLink(action.to, action.at);
         applied.push(action);
       } else if (action.type === "link") {
-        const curLst = safeLstat(action.at);
-        if (curLst) {
-          if (curLst.isSymbolicLink()) {
-            removeLink(action.at);
-          } else {
-            throw new Error(`目标位置已存在实体目录，拒绝覆盖: ${action.at}`);
+        if (action.materialize === "copy") {
+          writeManagedCopy(action.sourceDir || action.to, action.at, {
+            sourceId: action.sourceId || null,
+            skillRef: action.skillRef || null,
+            origin: action.origin || "consolidate",
+          });
+        } else {
+          const curLst = safeLstat(action.at);
+          if (curLst) {
+            if (curLst.isSymbolicLink()) {
+              removeLink(action.at);
+            } else if (isManagedCopyDir(action.at)) {
+              removeManagedCopy(action.at);
+            } else {
+              throw new Error(`目标位置已存在实体目录，拒绝覆盖: ${action.at}`);
+            }
           }
+          createDirLink(action.to, action.at);
         }
-        createDirLink(action.to, action.at);
         applied.push(action);
       } else if (action.type === "removeEmptyLegacy") {
         removeIfEmptyDir(action.path);
@@ -622,10 +772,17 @@ export function resolveConflict({
 
   for (const discard of discardedCopies) {
     const discardCanon = normalizeForCompare(canonicalOrResolved(discard.path));
-    // Unlink any symlinks that pointed specifically to this discarded copy
+    // Unlink any symlinks or managed copies that referenced this discarded copy
     for (const link of scan.allSymlinks) {
       if (normalizeForCompare(link.targetReal) === discardCanon) {
         removeLink(link.path);
+      }
+    }
+    for (const copy of scan.allManagedCopies) {
+      if (copy.sourceDir && normalizeForCompare(copy.sourceDir) === discardCanon) {
+        if (isManagedCopyDir(copy.path)) {
+          removeManagedCopy(copy.path);
+        }
       }
     }
     const movedTo = moveIntoDir(batchTrashDir, discard.path, dirName);
@@ -635,6 +792,7 @@ export function resolveConflict({
   let finalPath = keptCopy.path;
   let syncResult = null;
   let consolidateResult = null;
+  const effectiveSyncMode = resolveSyncMode(config);
 
   if (keptCopy.isManagedSource) {
     syncResult = applySync();
@@ -644,6 +802,8 @@ export function resolveConflict({
     if (destLst) {
       if (destLst.isSymbolicLink()) {
         removeLink(hubDest);
+      } else if (isManagedCopyDir(hubDest)) {
+        removeManagedCopy(hubDest);
       } else {
         throw new Error(`中枢目录已存在非软链目录: ${hubDest}`);
       }
@@ -652,12 +812,26 @@ export function resolveConflict({
     moveDir(keptCopy.path, hubDest);
     finalPath = hubDest;
 
-    // Repoint any existing symlinks that pointed to the kept copy's previous location
+    // Repoint any existing symlinks or managed copies that referenced the kept copy's previous location
     for (const link of scan.allSymlinks) {
       if (normalizeForCompare(link.targetReal) === keptCanon) {
         const curLst = safeLstat(link.path);
         if (curLst?.isSymbolicLink()) removeLink(link.path);
-        createDirLink(hubDest, link.path);
+        if (effectiveSyncMode === "copy") {
+          writeManagedCopy(hubDest, link.path, { origin: "consolidate" });
+        } else {
+          createDirLink(hubDest, link.path);
+        }
+      }
+    }
+    for (const copy of scan.allManagedCopies) {
+      if (copy.sourceDir && normalizeForCompare(copy.sourceDir) === keptCanon) {
+        if (effectiveSyncMode === "copy") {
+          writeManagedCopy(hubDest, copy.path, { origin: "consolidate" });
+        } else {
+          if (isManagedCopyDir(copy.path)) removeManagedCopy(copy.path);
+          createDirLink(hubDest, copy.path);
+        }
       }
     }
   }

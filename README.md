@@ -9,10 +9,10 @@
    - `github`（个人通用源）：可放 GitHub 在多台设备间同步；提交/推送前自动扫描敏感词与密钥正则。
    - `internal`（公司专用源）：只允许公司内网 Git 域名，自动禁止 `github.com` / `gitlab.com` / `gitee.com` 等公网远端并安装 `pre-push` hook；**连 `profiles.json` 也按源分仓存放**，GitHub 仓里绝不会出现公司技能名。
    - `local`（仅本地源）：不建任何 Git 远端，适合个人本地草稿或暂不同步的技能，后续可随时一键升级为 `internal` 公司仓库。
-3. **跨端无痛链接**：
+3. **跨端无痛同步（默认 `syncMode: "auto"`）**：
    - macOS / Linux 使用目录 Symlink。
-   - Windows 使用 **Directory Junction**（无需管理员权限或开启开发者模式）。
-4. **绝不误删未纳管技能**：清理过期技能时严格校验“是受控软链且指向已注册源/中枢”，绝不触碰本机草稿或第三方安装的实体目录。
+   - Windows 默认使用**受管镜像副本（`copy` 模式，含 `.skill-hub-managed.json` 标记与内容摘要校验）**，确保 Antigravity / Claude Code / Cursor / Codex 等扫描器稳定发现技能，避免 NTFS Directory Junction 被跳过；也可通过设置切换为 `link` 模式（自动维护 Antigravity 的 `~/.gemini/config/skills.json` 清单）。
+4. **绝不误删未纳管技能**：清理过期技能时严格校验“是受控软链或带 `skill-hub` 标记的受管副本且指向已注册源/中枢”，绝不触碰本机草稿或第三方安装的实体目录。
 
 ## 安装与初始化
 

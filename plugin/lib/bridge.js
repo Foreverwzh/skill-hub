@@ -135,6 +135,7 @@ const FORWARDED_ENV_KEYS = [
   "GIT_SSH_COMMAND",
   "SKILL_HUB_HOME",
   "SKILL_HUB_USER_HOME",
+  "SKILL_HUB_SYNC_MODE",
 ];
 
 function collectForwardedEnv() {
@@ -192,7 +193,13 @@ export const TRUST_LABELS = {
 };
 
 export const MODE_LABELS = {
-  link: "建软链",
+  link: "独立挂载",
   "hub-only": "仅读中枢",
   disabled: "停用",
+};
+
+export const SYNC_MODE_LABELS = {
+  auto: "自动（macOS/Linux 软链 · Windows 镜像副本）",
+  copy: "受管镜像副本（兼容 Windows）",
+  link: "软链 / Junction",
 };

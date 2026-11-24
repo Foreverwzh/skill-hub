@@ -1,8 +1,11 @@
+import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
 export const IS_WINDOWS = process.platform === "win32";
+export const MANAGED_COPY_MARKER = ".skill-hub-managed.json";
+export const SKILL_COPY_SKIP_NAMES = new Set([".git", ".DS_Store", MANAGED_COPY_MARKER]);
 
 /**
  * Returns the effective user home directory (overridable for isolated tests).
@@ -184,19 +187,22 @@ export function removeLink(linkPath) {
 }
 
 /**
- * Recursively copies a directory tree (skipping symlinks to avoid external leaks).
+ * Recursively copies a directory tree (skipping symlinks and excluded names to avoid external leaks).
  */
-export function copyDirRecursive(srcDir, dstDir) {
+export function copyDirRecursive(srcDir, dstDir, { skipNames = null } = {}) {
   ensureDir(dstDir);
   const entries = fs.readdirSync(srcDir, { withFileTypes: true });
   for (const entry of entries) {
+    if (skipNames && skipNames.has(entry.name)) {
+      continue;
+    }
     const srcPath = path.join(srcDir, entry.name);
     const dstPath = path.join(dstDir, entry.name);
     if (entry.isSymbolicLink()) {
       continue;
     }
     if (entry.isDirectory()) {
-      copyDirRecursive(srcPath, dstPath);
+      copyDirRecursive(srcPath, dstPath, { skipNames });
     } else if (entry.isFile()) {
       fs.copyFileSync(srcPath, dstPath);
       const st = fs.statSync(srcPath);
@@ -207,6 +213,151 @@ export function copyDirRecursive(srcDir, dstDir) {
       }
     }
   }
+}
+
+/**
+ * Reads the skill-hub managed copy marker from a real directory, or returns null.
+ */
+export function readManagedCopyMarker(dirPath) {
+  const lst = safeLstat(dirPath);
+  if (!lst || !lst.isDirectory() || lst.isSymbolicLink()) return null;
+  try {
+    const raw = fs.readFileSync(path.join(dirPath, MANAGED_COPY_MARKER), "utf8");
+    const parsed = JSON.parse(raw);
+    if (parsed && parsed.managedBy === "skill-hub" && parsed.version === 1) {
+      return parsed;
+    }
+  } catch {
+    // Missing or unreadable marker means unmanaged directory
+  }
+  return null;
+}
+
+export function isManagedCopyDir(dirPath) {
+  return Boolean(readManagedCopyMarker(dirPath));
+}
+
+/**
+ * Computes a deterministic SHA-256 content digest for a skill directory,
+ * ignoring .git, .DS_Store, symlinks, and .skill-hub-managed.json.
+ */
+export function computeDirDigest(dirPath) {
+  const hash = crypto.createHash("sha256");
+
+  function walk(curDir, relPrefix) {
+    const entries = fs
+      .readdirSync(curDir, { withFileTypes: true })
+      .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+
+    for (const entry of entries) {
+      if (SKILL_COPY_SKIP_NAMES.has(entry.name) || entry.isSymbolicLink()) {
+        continue;
+      }
+      const relPosix = relPrefix ? `${relPrefix}/${entry.name}` : entry.name;
+      const fullPath = path.join(curDir, entry.name);
+      if (entry.isDirectory()) {
+        hash.update(`D:${relPosix}\0`);
+        walk(fullPath, relPosix);
+      } else if (entry.isFile()) {
+        const buf = fs.readFileSync(fullPath);
+        hash.update(`F:${relPosix}\0${buf.length}\0`);
+        hash.update(buf);
+        hash.update("\0");
+      }
+    }
+  }
+
+  walk(path.resolve(dirPath), "");
+  return hash.digest("hex");
+}
+
+/**
+ * Safely removes a directory only if it carries a valid skill-hub managed copy marker.
+ */
+export function removeManagedCopy(dirPath) {
+  const lst = safeLstat(dirPath);
+  if (!lst) return false;
+  if (!isManagedCopyDir(dirPath)) {
+    throw new Error(`Refusing to remove unmanaged directory: ${dirPath}`);
+  }
+  fs.rmSync(dirPath, { recursive: true, force: true });
+  return true;
+}
+
+/**
+ * Atomically writes or refreshes a managed copy directory with marker metadata.
+ * Refuses to overwrite unmanaged real directories or files.
+ */
+export function writeManagedCopy(
+  srcDir,
+  dstDir,
+  { sourceId = null, skillRef = null, digest = null, origin = "sync" } = {},
+) {
+  const absSrc = path.resolve(srcDir);
+  const absDst = path.resolve(dstDir);
+  const finalDigest = digest || computeDirDigest(absSrc);
+  const resolvedSourceDir = canonicalOrResolved(absSrc);
+
+  ensureDir(path.dirname(absDst));
+
+  const existing = safeLstat(absDst);
+  if (existing && !existing.isSymbolicLink() && !isManagedCopyDir(absDst)) {
+    throw new Error(`Refusing to overwrite unmanaged path: ${absDst}`);
+  }
+
+  const stagingDir = path.join(
+    path.dirname(absDst),
+    `.skill-hub-tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+  );
+
+  try {
+    copyDirRecursive(absSrc, stagingDir, { skipNames: SKILL_COPY_SKIP_NAMES });
+    const marker = {
+      managedBy: "skill-hub",
+      version: 1,
+      origin,
+      sourceId,
+      skillRef,
+      sourceDir: resolvedSourceDir,
+      digest: finalDigest,
+      syncedAt: new Date().toISOString(),
+    };
+    fs.writeFileSync(
+      path.join(stagingDir, MANAGED_COPY_MARKER),
+      `${JSON.stringify(marker, null, 2)}\n`,
+      "utf8",
+    );
+
+    const cur = safeLstat(absDst);
+    if (cur) {
+      if (cur.isSymbolicLink()) {
+        removeLink(absDst);
+      } else {
+        removeManagedCopy(absDst);
+      }
+    }
+
+    try {
+      fs.renameSync(stagingDir, absDst);
+    } catch (err) {
+      if (err.code === "EXDEV" || err.code === "EPERM" || err.code === "EACCES") {
+        copyDirRecursive(stagingDir, absDst);
+        fs.rmSync(stagingDir, { recursive: true, force: true });
+      } else {
+        throw err;
+      }
+    }
+  } finally {
+    if (safeLstat(stagingDir)) {
+      try {
+        fs.rmSync(stagingDir, { recursive: true, force: true });
+      } catch {
+        // Ignore staging cleanup errors
+      }
+    }
+  }
+
+  return { digest: finalDigest, sourceDir: resolvedSourceDir };
 }
 
 /**

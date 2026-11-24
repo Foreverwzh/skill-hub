@@ -12,6 +12,18 @@ import {
 
 export const TRUST_LEVELS = ["github", "internal", "local"];
 export const TARGET_MODES = ["link", "hub-only", "disabled"];
+export const SYNC_MODES = ["auto", "link", "copy"];
+
+export function resolveSyncMode(config = null, { platform = process.platform } = {}) {
+  if (config?.syncMode === "link" || config?.syncMode === "copy") {
+    return config.syncMode;
+  }
+  const envMode = process.env.SKILL_HUB_SYNC_MODE;
+  if (envMode === "link" || envMode === "copy") {
+    return envMode;
+  }
+  return platform === "win32" ? "copy" : "link";
+}
 
 export const KNOWN_AGENTS = [
   {
@@ -132,6 +144,7 @@ export function normalizeConfig(raw) {
     version: 1,
     deviceName: os.hostname(),
     hubDir: "~/.agents/skills",
+    syncMode: "auto",
     sources: [],
     enabledProfiles: [],
     include: [],
@@ -200,6 +213,7 @@ export function normalizeConfig(raw) {
     version: 1,
     deviceName: String(raw.deviceName || defaults.deviceName),
     hubDir: String(raw.hubDir || defaults.hubDir),
+    syncMode: SYNC_MODES.includes(raw.syncMode) ? raw.syncMode : "auto",
     sources,
     enabledProfiles: Array.isArray(raw.enabledProfiles)
       ? [...new Set(raw.enabledProfiles.map(String))]
@@ -229,6 +243,10 @@ export function loadState() {
   return {
     version: 1,
     managedLinks: Array.isArray(raw?.managedLinks) ? raw.managedLinks.map(String) : [],
+    managedCopies: Array.isArray(raw?.managedCopies) ? raw.managedCopies.map(String) : [],
+    managedManifestEntries: Array.isArray(raw?.managedManifestEntries)
+      ? raw.managedManifestEntries.map(String)
+      : [],
   };
 }
 
@@ -237,6 +255,10 @@ export function saveState(state) {
   const normalized = {
     version: 1,
     managedLinks: [...new Set((state?.managedLinks || []).map(String))].sort(),
+    managedCopies: [...new Set((state?.managedCopies || []).map(String))].sort(),
+    managedManifestEntries: [
+      ...new Set((state?.managedManifestEntries || []).map(String)),
+    ].sort(),
   };
   writeJsonAtomic(stateFile, normalized);
   return normalized;

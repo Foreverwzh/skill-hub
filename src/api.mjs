@@ -1,11 +1,13 @@
 import path from "node:path";
 import {
   KNOWN_AGENTS,
+  SYNC_MODES,
   TARGET_MODES,
   loadConfig,
   loadGuardConfig,
   loadRuntimeInfo,
   loadState,
+  resolveSyncMode,
   saveConfig,
   saveGuardConfig,
 } from "./config.mjs";
@@ -24,11 +26,15 @@ import {
 import { getRemotes, getRepoStatus, gitCommitAndPush, gitPull, isGitRepo } from "./git.mjs";
 import { guardSource, hasPrePushHook, installPrePushHook } from "./guard.mjs";
 import {
+  canonicalOrResolved,
+  computeDirDigest,
   contractHome,
   expandHome,
   normalizeForCompare,
+  readManagedCopyMarker,
   safeLstat,
   safeRealpath,
+  safeStat,
 } from "./paths.mjs";
 import {
   DEFAULT_CLI_PATH,
@@ -45,13 +51,37 @@ import {
 } from "./sources.mjs";
 import { applySync, buildSkillCatalog, planSync } from "./sync.mjs";
 
-function computeSkillCoverage(skill, desired, config) {
+function computeSkillCoverage(skill, desired, config, effectiveSyncMode, sourceDigest) {
+  function inspectEntry(entryPath) {
+    const lst = safeLstat(entryPath);
+    if (!lst) return "missing";
+    if (lst.isSymbolicLink()) {
+      const real = safeRealpath(entryPath);
+      if (!real || normalizeForCompare(real) !== normalizeForCompare(skill.dir)) {
+        return "conflict";
+      }
+      return effectiveSyncMode === "link" ? "synced" : "stale";
+    }
+    if (lst.isDirectory()) {
+      const marker = readManagedCopyMarker(entryPath);
+      if (!marker) return "conflict";
+      if (effectiveSyncMode !== "copy") return "stale";
+      const sourceMatches =
+        normalizeForCompare(marker.sourceDir || "") ===
+        normalizeForCompare(canonicalOrResolved(skill.dir));
+      const hasSkillMd = Boolean(safeStat(path.join(entryPath, "SKILL.md"))?.isFile());
+      if (sourceMatches && marker.digest === sourceDigest && hasSkillMd) {
+        return "synced";
+      }
+      return "stale";
+    }
+    return "conflict";
+  }
+
   const hubDir = desired.hubAbsDir;
   const hubLink = path.join(hubDir, skill.dirName);
-  const hubReal = safeRealpath(hubLink);
-  const hubActive = Boolean(
-    hubReal && normalizeForCompare(hubReal) === normalizeForCompare(skill.dir),
-  );
+  const hubState = inspectEntry(hubLink);
+  const hubActive = hubState === "synced";
   const hubDesired = desired.hubDesired.has(skill.dirName);
 
   const coverage = [];
@@ -70,19 +100,20 @@ function computeSkillCoverage(skill, desired, config) {
 
     const targetDir = expandHome(target.path);
     const tLink = path.join(targetDir, skill.dirName);
-    const lst = safeLstat(tLink);
+    const entryState = inspectEntry(tLink);
     const targetWant = desired.targetDesired[targetId]?.has(skill.dirName) || false;
 
     let status = "off";
-    if (lst && !lst.isSymbolicLink()) {
+    if (entryState === "conflict") {
       status = "conflict";
-    } else if (lst && lst.isSymbolicLink()) {
-      const real = safeRealpath(tLink);
-      if (real && normalizeForCompare(real) === normalizeForCompare(skill.dir)) {
-        status = targetWant ? "linked" : "pending-remove";
-      } else {
-        status = "conflict";
-      }
+    } else if (entryState === "synced") {
+      status = targetWant
+        ? effectiveSyncMode === "copy"
+          ? "copied"
+          : "linked"
+        : "pending-remove";
+    } else if (entryState === "stale") {
+      status = targetWant ? "pending" : "pending-remove";
     } else if (targetWant) {
       status = "pending";
     }
@@ -104,6 +135,7 @@ export function getFullStatus() {
   const runtimeInfo = loadRuntimeInfo();
   const catalog = buildSkillCatalog(config);
   const plan = planSync(config, state, catalog);
+  const effectiveSyncMode = plan.effectiveSyncMode || resolveSyncMode(config);
   const doctor = runDoctor(config);
   const consolidate = planConsolidate(config);
 
@@ -149,6 +181,16 @@ export function getFullStatus() {
     }
   }
 
+  const digestCache = new Map();
+  const getDigest = (dirPath) => {
+    if (effectiveSyncMode !== "copy") return null;
+    const key = normalizeForCompare(dirPath);
+    if (!digestCache.has(key)) {
+      digestCache.set(key, computeDirDigest(dirPath));
+    }
+    return digestCache.get(key);
+  };
+
   const skills = catalog.activeSkills.map((skill) => {
     const inHubDesired = plan.desired.hubDesired.has(skill.dirName);
     const fromEnabledProfile = skill.profiles.some((p) => enabledProfilesSet.has(p));
@@ -174,6 +216,7 @@ export function getFullStatus() {
       };
     }
 
+    const sourceDigest = getDigest(skill.dir);
     return {
       ...skill,
       enabled: inHubDesired,
@@ -181,7 +224,13 @@ export function getFullStatus() {
       explicitlyIncluded,
       explicitlyExcluded,
       perTarget,
-      coverage: computeSkillCoverage(skill, plan.desired, config),
+      coverage: computeSkillCoverage(
+        skill,
+        plan.desired,
+        config,
+        effectiveSyncMode,
+        sourceDigest,
+      ),
     };
   });
 
@@ -197,6 +246,7 @@ export function getFullStatus() {
 
   return {
     config,
+    effectiveSyncMode,
     guard: guardConfig,
     runtime: runtimeInfo,
     sources,
@@ -419,13 +469,19 @@ export function updateTarget({ id, mode, path: targetPath, label }) {
   return { ok: true, id, target: existing };
 }
 
-export function updateSettings({ deviceName, hubDir, guard }) {
+export function updateSettings({ deviceName, hubDir, syncMode, guard }) {
   const config = loadConfig();
   if (deviceName !== undefined && String(deviceName).trim()) {
     config.deviceName = String(deviceName).trim();
   }
   if (hubDir !== undefined && String(hubDir).trim()) {
     config.hubDir = contractHome(expandHome(String(hubDir).trim()));
+  }
+  if (syncMode !== undefined) {
+    if (!SYNC_MODES.includes(syncMode)) {
+      throw new Error(`非法同步方式 "${syncMode}"，必须是 ${SYNC_MODES.join(" | ")}`);
+    }
+    config.syncMode = syncMode;
   }
   saveConfig(config);
 
