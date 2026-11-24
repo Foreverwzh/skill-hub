@@ -1,0 +1,16 @@
+{
+  "name": "skill-hub",
+  "version": "0.1.0",
+  "description": "Cross-platform multi-agent skill manager with GitHub/internal isolation, leak guard, and Smelt UI plugin",
+  "type": "module",
+  "bin": {
+    "skill-hub": "./bin/skill-hub.mjs"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "install:plugin": "node ./scripts/install.mjs"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
