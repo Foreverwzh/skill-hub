@@ -1,6 +1,6 @@
 {
   "id": "ai.smelt.skill-hub",
   "name": "技能中心",
-  "version": "0.1.0",
-  "entry": "main.js"
+  "version": "0.2.0",
+  "entry": "nsh.tsx"
 }

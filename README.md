@@ -67,7 +67,9 @@ skill-hub move my-skill --from local-work --to internal-team
 
 ## 在 Smelt 桌面端使用
 
-安装后，Smelt 会自动加载 `~/.smelt/plugins/ai.smelt.skill-hub`：
-- 命令行验证：`smelt plugin check ~/.smelt/plugins/ai.smelt.skill-hub`
+安装后，Smelt 会自动加载 `~/.smelt/plugins/ai.smelt.skill-hub`（NSH TSX 插件，入口 `plugin/nsh.tsx`）：
+- 插件经运行时的 `process.run` 跑 `~/.skill-hub/runtime.json` 里记的 node 和 CLI，需要带这个方法的 Smelt；换了 node 或仓库位置重新跑 `node scripts/install.mjs`。
+- 命令行验证：`smelt plugin check ~/.smelt/plugins/ai.smelt.skill-hub`；升级 Smelt 后先 `smelt plugin types plugin` 刷新类型
+- 插件单测：`cd plugin && bun test tests`
 - 打开主界面：`smelt app run ai.smelt.skill-hub/open`
 - 设置页：**设置 → 智能体 → 技能中心**（配置敏感词典、禁止公网域名、正则规则与中枢路径）

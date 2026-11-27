@@ -1,0 +1,643 @@
+_version: 2
+action.add:
+  en: "Add"
+  zh-CN: "添加"
+action.apply:
+  en: "Apply Changes"
+  zh-CN: "应用变更"
+action.apply_n:
+  en: "Apply Changes (%{n})"
+  zh-CN: "应用变更 (%{n})"
+action.close:
+  en: "Close"
+  zh-CN: "关闭"
+action.copy:
+  en: "Copy"
+  zh-CN: "复制"
+action.copy_path:
+  en: "Copy Path"
+  zh-CN: "复制路径"
+action.delete:
+  en: "Delete"
+  zh-CN: "删除"
+action.more:
+  en: "More"
+  zh-CN: "更多"
+action.open_dir:
+  en: "Open Folder"
+  zh-CN: "打开目录"
+action.pull_all:
+  en: "Pull & Sync"
+  zh-CN: "拉取并同步"
+action.refresh:
+  en: "Refresh"
+  zh-CN: "刷新"
+action.settings:
+  en: "Leak Guard Settings…"
+  zh-CN: "防泄密设置…"
+banner.go_doctor:
+  en: "Review"
+  zh-CN: "去纳管"
+banner.unmanaged:
+  en: "%{n} skills on this machine aren't managed yet."
+  zh-CN: "本机还有 %{n} 个散落/未纳管的技能。"
+cancel:
+  en: "Cancel"
+  zh-CN: "取消"
+cmd.consolidate:
+  en: "Consolidate Skills into the Hub"
+  zh-CN: "整合技能到中枢并补齐软链"
+cmd.open:
+  en: "Open Skill Hub"
+  zh-CN: "打开技能中心"
+cmd.status:
+  en: "Skill Hub Status"
+  zh-CN: "查看技能同步状态"
+cmd.sync:
+  en: "Sync Skills"
+  zh-CN: "同步技能链接"
+conflict.copies:
+  en: "%{n} copies"
+  zh-CN: "%{n} 份同名副本"
+conflict.keep:
+  en: "Keep Selected…"
+  zh-CN: "保留选中…"
+conflict.keep_action:
+  en: "Keep"
+  zh-CN: "保留并整合"
+conflict.keep_body:
+  en: "The other %{n} copies move to %{trash}; the kept one is consolidated into %{hub} with links filled in."
+  zh-CN: "其余 %{n} 份副本移入 %{trash}，保留的一份整合进 %{hub} 并补齐软链。"
+conflict.keep_title:
+  en: "Keep %{name} from %{where}?"
+  zh-CN: "保留 %{where} 的 %{name}？"
+cons.all:
+  en: "Consolidate (%{n})"
+  zh-CN: "一键整合 (%{n})"
+cons.all_action:
+  en: "Consolidate"
+  zh-CN: "整合"
+cons.all_body:
+  en: "Moves %{move} skills into %{hub}, creates %{link} links and repairs %{relink}. Name conflicts are skipped."
+  zh-CN: "迁入 %{move} 个技能到 %{hub}，新建 %{link} 条、修复 %{relink} 条软链；同名冲突跳过保留原样。"
+cons.all_title:
+  en: "Consolidate into the hub and fill in links?"
+  zh-CN: "整合到中枢并补齐软链？"
+cons.collapse:
+  en: "Show first 10"
+  zh-CN: "只看前 10 步"
+cons.done:
+  en: "Everything is in %{hub} and links are complete."
+  zh-CN: "所有技能都已在 %{hub}，各工具软链完整。"
+cons.done_with_conflicts:
+  en: "Apart from %{n} name conflicts, everything is in %{hub}."
+  zh-CN: "除 %{n} 项同名冲突外，其余都已整合在 %{hub}。"
+cons.expand:
+  en: "Show all %{n} steps"
+  zh-CN: "展开全部 %{n} 步"
+cons.hint:
+  en: "Real skill folders scattered across agents move into the hub; tools set to Link get symlinks, Hub Only tools read the hub directly."
+  zh-CN: "把散落在各 Agent 目录的实体技能归拢到中枢；「建软链」的工具补软链，「仅读中枢」的工具直接读中枢。"
+cons.move_only:
+  en: "Move Only (%{n})"
+  zh-CN: "仅迁入 (%{n})"
+cons.move_only_action:
+  en: "Move"
+  zh-CN: "迁入"
+cons.move_only_body:
+  en: "Only the folders move (existing links pointing at them are updated). No new links are made; name conflicts are skipped."
+  zh-CN: "只迁移实体目录（并更新已有指向它们的软链），不补新软链；同名冲突自动跳过。"
+cons.move_only_title:
+  en: "Move %{n} scattered skills into %{hub}?"
+  zh-CN: "把 %{n} 个散落技能迁入 %{hub}？"
+cons.open_trash:
+  en: "Open Trash"
+  zh-CN: "打开回收站"
+cons.title:
+  en: "Consolidate into %{hub}"
+  zh-CN: "整合到 %{hub}"
+convert.action:
+  en: "Convert"
+  zh-CN: "升级"
+convert.allow:
+  en: "Allowed internal hosts (optional, comma separated)"
+  zh-CN: "允许的内网域名（可选，逗号分隔）"
+convert.hint:
+  en: "Initializes Git. The remote can be added later; public hosts are refused."
+  zh-CN: "初始化为 Git 仓库。Remote 可以之后再加，公网域名会被拒绝。"
+convert.remote:
+  en: "Internal Git remote URL (optional)"
+  zh-CN: "内网 Git Remote URL（可选）"
+convert.title:
+  en: "Convert %{name} to an internal repo"
+  zh-CN: "把 %{name} 升级为公司内网仓"
+cov.conflict:
+  en: "conflict"
+  zh-CN: "冲突"
+cov.hub:
+  en: "via hub"
+  zh-CN: "中枢"
+cov.linked:
+  en: "✓"
+  zh-CN: "✓"
+cov.none:
+  en: "Not linked to any tool"
+  zh-CN: "当前未挂到任何工具"
+cov.pending:
+  en: "pending"
+  zh-CN: "待建"
+cov.pending_remove:
+  en: "to remove"
+  zh-CN: "待删"
+error.no_runtime:
+  en: "%{path} not found. Run `node scripts/install.mjs` in the skill-hub repo."
+  zh-CN: "找不到 %{path}，请在 skill-hub 仓库里运行 node scripts/install.mjs。"
+filter.all:
+  en: "All"
+  zh-CN: "全部"
+git.ahead:
+  en: "%{n} ahead"
+  zh-CN: "领先 %{n}"
+git.behind:
+  en: "%{n} behind"
+  zh-CN: "落后 %{n}"
+git.branch:
+  en: "branch %{name}"
+  zh-CN: "分支 %{name}"
+git.clean:
+  en: "clean"
+  zh-CN: "工作区干净"
+git.dirty:
+  en: "%{n} files uncommitted"
+  zh-CN: "%{n} 个文件未提交"
+git.no_remote:
+  en: "no remote"
+  zh-CN: "未配置 Remote"
+git.not_git:
+  en: "Not a Git folder"
+  zh-CN: "非 Git 目录"
+health.clean_action:
+  en: "Clean Up"
+  zh-CN: "清理"
+health.clean_body:
+  en: "Only links whose target is gone or lacks SKILL.md are removed. Real folders are never touched."
+  zh-CN: "只删目标已不存在或缺少 SKILL.md 的软链本身，绝不碰实体目录。"
+health.clean_broken:
+  en: "Clean %{n} Broken Links…"
+  zh-CN: "清理 %{n} 条失效链接…"
+health.clean_title:
+  en: "Clean all broken links?"
+  zh-CN: "清理全部失效软链？"
+health.fix_hooks:
+  en: "Install %{n} Hooks"
+  zh-CN: "补装 %{n} 个 Hook"
+health.ok:
+  en: "Links, copies and guard hooks are all healthy."
+  zh-CN: "链接、副本与防泄密 Hook 都正常。"
+health.title:
+  en: "Health"
+  zh-CN: "健康体检"
+load_failed:
+  en: "Couldn't read the skill status. Refresh from the … menu."
+  zh-CN: "读不到技能状态，可以在 … 菜单里刷新。"
+loading:
+  en: "Scanning skills and sources…"
+  zh-CN: "正在扫描本机技能与仓库…"
+mode.disabled:
+  en: "Off"
+  zh-CN: "停用"
+mode.hub-only:
+  en: "Hub Only"
+  zh-CN: "仅读中枢"
+mode.link:
+  en: "Mount"
+  zh-CN: "独立挂载"
+notice.adopted:
+  en: "Adopted %{name} into %{dst}"
+  zh-CN: "已把 %{name} 纳管到 %{dst}"
+notice.cleaned:
+  en: "Removed %{n} broken links"
+  zh-CN: "已清理 %{n} 条失效软链"
+notice.consolidated:
+  en: "Done: %{move} moved, %{link} links created, %{relink} repaired, %{skipped} conflicts skipped"
+  zh-CN: "整合完成：迁入 %{move}，新建软链 %{link}，修复 %{relink}，跳过冲突 %{skipped}"
+notice.converted:
+  en: "%{name} is now an internal repo"
+  zh-CN: "%{name} 已升级为公司内网仓"
+notice.copied:
+  en: "Copied %{value}"
+  zh-CN: "已复制 %{value}"
+notice.guard_ok:
+  en: "%{name} passed the leak check"
+  zh-CN: "%{name} 安全自检通过"
+notice.hook_installed:
+  en: "Installed the guard hook for %{name}"
+  zh-CN: "已为 %{name} 安装防泄密钩子"
+notice.hooks_fixed:
+  en: "Installed guard hooks for all Git sources"
+  zh-CN: "已为所有 Git 源补装防泄密钩子"
+notice.item_added:
+  en: "Added %{value}"
+  zh-CN: "已添加 %{value}"
+notice.item_removed:
+  en: "Removed %{value}"
+  zh-CN: "已移除 %{value}"
+notice.moved:
+  en: "Moved %{name} to %{dst}"
+  zh-CN: "已把 %{name} 迁移到 %{dst}"
+notice.profile_deleted:
+  en: "Deleted profile %{name}"
+  zh-CN: "已删除分组 %{name}"
+notice.profile_saved:
+  en: "Saved %{name} (%{n} skills)"
+  zh-CN: "已保存分组 %{name}（%{n} 个技能）"
+notice.pulled:
+  en: "Pulled %{n} repos and synced links"
+  zh-CN: "已拉取 %{n} 个仓库并同步链接"
+notice.pulled_one:
+  en: "Pulled %{name} and refreshed links"
+  zh-CN: "已拉取 %{name} 并刷新链接"
+notice.pushed:
+  en: "%{name} done"
+  zh-CN: "%{name} 已处理完成"
+notice.resolved:
+  en: "Resolved %{name}, kept %{path}"
+  zh-CN: "已解决 %{name} 冲突，保留 %{path}"
+notice.settings_saved:
+  en: "Saved"
+  zh-CN: "已保存"
+notice.source_added:
+  en: "Added source %{name}"
+  zh-CN: "已添加技能源 %{name}"
+notice.source_removed:
+  en: "Removed source %{name} (files kept)"
+  zh-CN: "已移除技能源 %{name}（磁盘文件保留）"
+notice.synced:
+  en: "Synced: %{create} created, %{replace} updated, %{remove} removed, %{conflicts} conflicts skipped"
+  zh-CN: "同步完成：新建 %{create}，更新 %{replace}，清理 %{remove}，跳过冲突 %{conflicts}"
+notice.target_set:
+  en: "%{name} set to %{mode}. Apply changes to take effect."
+  zh-CN: "%{name} 已设为「%{mode}」，点「应用变更」生效"
+notice.to_hub:
+  en: "Moved %{name} into %{hub}"
+  zh-CN: "已把 %{name} 迁入 %{hub}"
+notice.trust_set:
+  en: "%{name} is now %{trust}"
+  zh-CN: "%{name} 已改为 %{trust}"
+profiles.all:
+  en: "Select All"
+  zh-CN: "全选"
+profiles.delete:
+  en: "Delete…"
+  zh-CN: "删除…"
+profiles.delete_body:
+  en: "Only the profile definition is removed. No skill files are deleted."
+  zh-CN: "只删分组定义并取消本机启用，不删任何技能文件。"
+profiles.delete_title:
+  en: "Delete profile %{name}?"
+  zh-CN: "删除分组 %{name}？"
+profiles.edit:
+  en: "Edit Members…"
+  zh-CN: "编辑成员…"
+profiles.edit_title:
+  en: "Edit %{name}"
+  zh-CN: "编辑分组 %{name}"
+profiles.empty:
+  en: "No profiles yet. Bundle common skills into presets like base / work."
+  zh-CN: "暂无分组，可以把常用技能打包成 base / work 等预设。"
+profiles.members:
+  en: "%{n} / %{total} selected"
+  zh-CN: "已选 %{n} / %{total}"
+profiles.name:
+  en: "Profile name, e.g. base / work"
+  zh-CN: "分组名，如 base / work"
+profiles.name_required:
+  en: "Enter a profile name."
+  zh-CN: "请输入分组名。"
+profiles.new:
+  en: "New Profile"
+  zh-CN: "新建分组"
+profiles.new_title:
+  en: "New Profile"
+  zh-CN: "新建分组"
+profiles.no_skills:
+  en: "No managed skills in this source."
+  zh-CN: "该源下暂无已纳管技能。"
+profiles.none:
+  en: "Clear"
+  zh-CN: "清空"
+profiles.save:
+  en: "Save"
+  zh-CN: "保存"
+profiles.source:
+  en: "Source"
+  zh-CN: "所属源"
+profiles.title:
+  en: "Profiles"
+  zh-CN: "设备分组"
+push.action:
+  en: "Check & Push"
+  zh-CN: "检查并推送"
+push.hint:
+  en: "The leak guard runs before committing and pushing."
+  zh-CN: "提交和推送前会先跑防泄密守卫。"
+push.message:
+  en: "Commit message (auto if empty)"
+  zh-CN: "提交说明（留空自动生成）"
+push.title:
+  en: "Commit & push %{name}"
+  zh-CN: "提交并推送 %{name}"
+search.placeholder:
+  en: "Search skills"
+  zh-CN: "搜索技能名或描述"
+settings.basic:
+  en: "This Machine"
+  zh-CN: "本机"
+settings.device:
+  en: "Device"
+  zh-CN: "设备名"
+settings.host_placeholder:
+  en: "e.g. github.com"
+  zh-CN: "如 github.com"
+settings.hosts:
+  en: "Forbidden Public Hosts"
+  zh-CN: "内网源禁止的公网域名"
+settings.hosts_hint:
+  en: "Internal sources can't use remotes on these hosts."
+  zh-CN: "内网源不能绑定这些域名的远端。"
+settings.hub:
+  en: "Hub folder"
+  zh-CN: "中枢目录"
+settings.hub_hint:
+  en: "After changing the hub folder, apply changes in Skill Hub."
+  zh-CN: "改了中枢目录后，回技能中心点「应用变更」。"
+settings.keyword_placeholder:
+  en: "New word"
+  zh-CN: "新关键词"
+settings.keywords:
+  en: "Sensitive Words"
+  zh-CN: "防泄密关键词"
+settings.keywords_hint:
+  en: "Committing or pushing to a GitHub source, or moving into one, is blocked on these words (case-insensitive). Stored only in ~/.skill-hub/guard.json."
+  zh-CN: "向 GitHub 源提交、推送或迁入时，命中这些词（不分大小写）立即拦截。只存在本机 ~/.skill-hub/guard.json。"
+settings.none:
+  en: "None yet."
+  zh-CN: "暂无。"
+settings.regex:
+  en: "Sensitive Patterns"
+  zh-CN: "敏感内容正则"
+settings.regex_hint:
+  en: "Regular expressions checked alongside the words above."
+  zh-CN: "和上面的关键词一起检查的正则。"
+settings.regex_placeholder:
+  en: "New regular expression"
+  zh-CN: "新正则"
+settings.runtime:
+  en: "Runtime"
+  zh-CN: "运行环境"
+settings.save:
+  en: "Save"
+  zh-CN: "保存"
+skill.edit_md:
+  en: "Edit SKILL.md"
+  zh-CN: "编辑 SKILL.md"
+skill.move:
+  en: "Move to"
+  zh-CN: "迁移到"
+skill.move_action:
+  en: "Move"
+  zh-CN: "迁移"
+skill.move_body:
+  en: "The folder moves to the target repo and every local link is updated."
+  zh-CN: "会把技能目录移到目标仓库，并自动更新所有本地链接。"
+skill.move_body_github:
+  en: "The target is a GitHub source: it's scanned for sensitive words and secrets first, and blocked on a hit. Local links are updated afterwards."
+  zh-CN: "目标是 GitHub 源，会先做敏感词与密钥扫描，命中即拦截；迁移后本地链接自动重指。"
+skill.move_title:
+  en: "Move %{name} to %{dst}?"
+  zh-CN: "把 %{name} 迁移到 %{dst}？"
+skill.no_profiles:
+  en: "No profiles in this source"
+  zh-CN: "该源下暂无分组"
+skill.override.exclude:
+  en: "forced off"
+  zh-CN: "强关"
+skill.override.include:
+  en: "forced on"
+  zh-CN: "强开"
+skill.per_target:
+  en: "Per tool"
+  zh-CN: "单工具覆盖"
+skill.profiles:
+  en: "Profiles"
+  zh-CN: "所属分组"
+skill.tag.excluded:
+  en: "Excluded here"
+  zh-CN: "本机已排除"
+skill.tag.included:
+  en: "Enabled here"
+  zh-CN: "本机单独启用"
+skill.tag.profile:
+  en: "From profile"
+  zh-CN: "来自启用的分组"
+skills.empty:
+  en: "No skills in the sources yet."
+  zh-CN: "源里还没有技能。"
+skills.no_match:
+  en: "No skills match."
+  zh-CN: "没有匹配的技能。"
+skills.title:
+  en: "Managed Skills %{shown} / %{total}"
+  zh-CN: "已纳管技能 %{shown} / %{total}"
+source.add:
+  en: "Add Source"
+  zh-CN: "添加技能源"
+source.add_action:
+  en: "Add"
+  zh-CN: "添加"
+source.add_title:
+  en: "Add Skill Source"
+  zh-CN: "添加技能源"
+source.allow_hosts:
+  en: "Allowed internal hosts (optional, comma separated)"
+  zh-CN: "允许的内网域名（可选，逗号分隔）"
+source.change_trust:
+  en: "Change Security Level…"
+  zh-CN: "改安全级别…"
+source.changed:
+  en: "Uncommitted skills: %{names}"
+  zh-CN: "待提交技能：%{names}"
+source.clone:
+  en: "Git clone URL (optional)"
+  zh-CN: "Git Clone URL（可选）"
+source.convert:
+  en: "Convert to Internal Repo…"
+  zh-CN: "转为公司内网仓…"
+source.guard:
+  en: "Run Leak Check"
+  zh-CN: "安全自检"
+source.hint.github:
+  en: "Commits and pushes to GitHub sources are scanned for sensitive words and secrets first."
+  zh-CN: "GitHub 源提交与推送前会自动扫描敏感词和密钥。"
+source.hint.internal:
+  en: "Public Git hosts are refused and a pre-push guard hook is installed."
+  zh-CN: "内网源禁止绑定公网 Git 域名，并自动安装 pre-push 拦截钩子。"
+source.hint.local:
+  en: "No Git remote. You can upgrade it to an internal repo later."
+  zh-CN: "不建 Git 远端，之后可随时升级为公司内网仓。"
+source.hook_missing:
+  en: "Hook missing"
+  zh-CN: "缺少 Hook"
+source.hook_ok:
+  en: "Hook ready"
+  zh-CN: "防泄密 Hook 就绪"
+source.id:
+  en: "Source ID, e.g. personal"
+  zh-CN: "源 ID，如 personal"
+source.install_hook:
+  en: "Install Hook"
+  zh-CN: "安装 Hook"
+source.name:
+  en: "Display name"
+  zh-CN: "显示名称"
+source.path:
+  en: "Local folder"
+  zh-CN: "本地目录"
+source.pick:
+  en: "Choose…"
+  zh-CN: "选择…"
+source.pick_confirm:
+  en: "Choose"
+  zh-CN: "选择"
+source.pick_title:
+  en: "Choose a skill source folder"
+  zh-CN: "选择或新建技能源目录"
+source.pull:
+  en: "Pull"
+  zh-CN: "拉取"
+source.push:
+  en: "Commit & Push…"
+  zh-CN: "提交并推送…"
+source.remove:
+  en: "Remove"
+  zh-CN: "移除"
+source.remove_body:
+  en: "Only the reference and dead links on this machine are removed. Repo files on disk stay."
+  zh-CN: "只从本机配置移除引用并清理失效链接，不删磁盘上的仓库文件。"
+source.remove_title:
+  en: "Remove source %{name}?"
+  zh-CN: "移除技能源 %{name}？"
+source.required:
+  en: "Source ID and folder are required."
+  zh-CN: "源 ID 和本地目录不能为空。"
+source.skills_n:
+  en: "%{n} skills"
+  zh-CN: "技能 %{n}"
+source.trust:
+  en: "Security level"
+  zh-CN: "安全级别"
+source.warn_company:
+  en: "The ID or name looks company-specific but GitHub is selected. Pick Internal or Local Only for company skills."
+  zh-CN: "源 ID 或名称像是公司专用，却选了 GitHub。公司技能请改选「公司内网」或「仅本地」。"
+sources.empty:
+  en: "No sources yet."
+  zh-CN: "暂无技能源。"
+sources.hint:
+  en: "Personal GitHub, internal Git and local-only sources are kept apart."
+  zh-CN: "个人 GitHub 仓、公司内网仓、仅本地源物理隔离管理。"
+tab.doctor:
+  en: "Health"
+  zh-CN: "体检"
+tab.doctor_n:
+  en: "Health %{n}"
+  zh-CN: "体检 %{n}"
+tab.skills:
+  en: "Skills %{n}"
+  zh-CN: "技能 %{n}"
+tab.sources:
+  en: "Sources %{n}"
+  zh-CN: "仓库 %{n}"
+targets.hint:
+  en: "Mount gives the tool its own entry (a symlink on macOS/Linux, a managed copy on Windows by default; per-tool overrides work); Hub Only lets the tool read the hub directly."
+  zh-CN: "「独立挂载」在工具目录单独挂一份（macOS/Linux 建软链，Windows 默认建受管镜像副本，支持单工具开关）；「仅读中枢」由工具直接读中枢，避免重复加载。"
+targets.title:
+  en: "Agent tools on %{device} · %{mode}"
+  zh-CN: "%{device} 上的 Agent 工具 · %{mode}"
+trust.github:
+  en: "GitHub"
+  zh-CN: "GitHub 通用"
+trust.internal:
+  en: "Internal"
+  zh-CN: "公司内网"
+trust.local:
+  en: "Local Only"
+  zh-CN: "仅本地"
+trust.unmanaged:
+  en: "Unmanaged"
+  zh-CN: "未纳管"
+trust_dialog.action:
+  en: "Change"
+  zh-CN: "确认切换"
+trust_dialog.hint.github:
+  en: "The folder is fully scanned for sensitive words and secrets first; a hit blocks the switch."
+  zh-CN: "会先全量扫描敏感词/密钥，命中则阻止切换。"
+trust_dialog.hint.internal:
+  en: "Remotes are checked for public hosts and the pre-push guard hook is installed."
+  zh-CN: "会校验远端不含公网 Git 域名，并安装 pre-push 防泄密钩子。"
+trust_dialog.hint.local:
+  en: "Only possible when no Git remote is set."
+  zh-CN: "只有没绑定 Git 远端时才能切成仅本地。"
+trust_dialog.title:
+  en: "Security level of %{name}"
+  zh-CN: "调整 %{name} 的安全级别"
+unmanaged.adopt:
+  en: "Adopt into %{name}"
+  zh-CN: "归入 %{name}"
+unmanaged.adopt_action:
+  en: "Adopt"
+  zh-CN: "纳管"
+unmanaged.adopt_body:
+  en: "%{src} moves into %{dst} and a link is left in its place."
+  zh-CN: "会把 %{src} 移入 %{dst}，原位置留下软链。"
+unmanaged.adopt_body_github:
+  en: "%{src} moves into %{dst} and a link is left in its place. A sensitive-word or secret hit blocks it."
+  zh-CN: "会把 %{src} 移入 %{dst}，原位置留下软链；命中敏感词或密钥会被拦截。"
+unmanaged.adopt_title:
+  en: "Adopt %{name} into %{dst}?"
+  zh-CN: "把 %{name} 纳管到 %{dst}？"
+unmanaged.empty:
+  en: "No scattered skill folders."
+  zh-CN: "没有散落的实体技能目录。"
+unmanaged.title:
+  en: "Unmanaged skills %{n}"
+  zh-CN: "未纳管技能 %{n}"
+unmanaged.to_hub:
+  en: "Move to Hub"
+  zh-CN: "迁入中枢"
+view.title:
+  en: "Skill Hub"
+  zh-CN: "技能中心"
+welcome.body:
+  en: "No skill sources yet. Add a personal GitHub repo, an internal Git repo or a local folder, then adopt existing skills from Health."
+  zh-CN: "还没有技能源。先添加个人 GitHub 仓、公司内网仓或仅本地目录，再到「体检」把现有技能纳管进来。"
+welcome.title:
+  en: "Welcome to Skill Hub"
+  zh-CN: "欢迎使用技能中心"
+sync_mode.auto:
+  en: "Auto (symlinks on macOS/Linux, managed copies on Windows)"
+  zh-CN: "自动（macOS/Linux 软链 · Windows 镜像副本）"
+sync_mode.copy:
+  en: "Managed copies (Windows friendly)"
+  zh-CN: "受管镜像副本（兼容 Windows）"
+sync_mode.link:
+  en: "Symlink / Junction"
+  zh-CN: "软链 / Junction"
+settings.sync_mode:
+  en: "Sync Method"
+  zh-CN: "同步方式"
+settings.sync_mode_hint:
+  en: "Agent scanners often skip directory Junctions on Windows; keep Auto or Managed copies there."
+  zh-CN: "Windows 下目录 Junction 常被 Agent 扫描器跳过，推荐保持「自动」或「受管镜像副本」。"
+notice.sync_mode_set:
+  en: "Sync method set to %{mode}. Apply changes in Skill Hub to take effect."
+  zh-CN: "同步方式已设为「%{mode}」，回技能中心点「应用变更」生效"
