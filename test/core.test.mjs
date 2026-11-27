@@ -16,6 +16,7 @@ import {
   getFullStatus,
   moveSkill,
   planConsolidate,
+  pullSources,
   pushSource,
   removeSource,
   resolveConflict,
@@ -704,8 +705,10 @@ test("copy mode lifecycle, digest drift detection, non-destructive protection, d
   const hubA = path.join(userHome, ".agents", "skills", "skill-a");
   const claudeA = path.join(userHome, ".claude", "skills", "skill-a");
   const agyA = path.join(userHome, ".gemini", "config", "skills", "skill-a");
+  const isWin = process.platform === "win32";
+  const expectedCopyDirs = isWin ? [hubA, claudeA] : [hubA, claudeA, agyA];
 
-  for (const dir of [hubA, claudeA, agyA]) {
+  for (const dir of expectedCopyDirs) {
     const lst = safeLstat(dir);
     assert.ok(lst?.isDirectory());
     assert.equal(lst?.isSymbolicLink(), false);
@@ -714,6 +717,12 @@ test("copy mode lifecycle, digest drift detection, non-destructive protection, d
       fs.readFileSync(path.join(dir, "scripts", "run.js"), "utf8"),
       "console.log('v1');\n",
     );
+  }
+  if (isWin) {
+    // On Windows copy mode, Antigravity uses skills.json directly without redundant folder copies
+    assert.equal(safeLstat(agyA), null);
+    const manifestPath = path.join(userHome, ".gemini", "config", "skills.json");
+    assert.equal(fs.existsSync(manifestPath), true);
   }
   assert.equal(readManagedCopyMarker(hubA)?.skillRef, "personal:skill-a");
 
@@ -729,6 +738,7 @@ test("copy mode lifecycle, digest drift detection, non-destructive protection, d
   assert.equal(syncNoop.summary.create, 0);
   assert.equal(syncNoop.summary.replace, 0);
   assert.equal(syncNoop.summary.remove, 0);
+  assert.equal(syncNoop.summary.totalPending, 0);
 
   // Status & doctor do not misclassify managed copies as unmanaged or conflicts
   const status = getFullStatus();
@@ -738,6 +748,10 @@ test("copy mode lifecycle, digest drift detection, non-destructive protection, d
   assert.equal(stA.coverage.find((c) => c.targetId === "claude")?.status, "copied");
   assert.equal(stA.coverage.find((c) => c.targetId === "codex")?.status, "via-hub");
   assert.equal(stA.coverage.find((c) => c.targetId === "cursor")?.status, "conflict");
+  assert.equal(
+    stA.coverage.find((c) => c.targetId === "antigravity")?.status,
+    isWin ? "linked" : "copied",
+  );
   assert.equal(stB.coverage.find((c) => c.targetId === "claude")?.status, "copied");
   assert.equal(
     status.doctor.unmanaged.some((u) => u.dirName === "skill-b"),
@@ -751,7 +765,7 @@ test("copy mode lifecycle, digest drift detection, non-destructive protection, d
   // Source edit triggers digest drift and updates all managed copies
   fs.writeFileSync(path.join(srcA, "scripts", "run.js"), "console.log('v2');\n", "utf8");
   const driftPlan = planSync();
-  assert.equal(driftPlan.summary.replace, 3);
+  assert.equal(driftPlan.summary.replace, expectedCopyDirs.length);
   const syncDrift = applySync();
   assert.equal(syncDrift.errors.length, 0);
   assert.equal(
@@ -787,11 +801,11 @@ test("seamless migration between link and copy modes", () => {
   updateSettings({ syncMode: "link" });
   const linkRes = applySync();
   assert.equal(linkRes.errors.length, 0);
-  const pathsToCheck = [
-    path.join(userHome, ".agents", "skills", "skill-a"),
-    path.join(userHome, ".claude", "skills", "skill-a"),
-    path.join(userHome, ".gemini", "config", "skills", "skill-a"),
-  ];
+  const isWin = process.platform === "win32";
+  const hubPath = path.join(userHome, ".agents", "skills", "skill-a");
+  const claudePath = path.join(userHome, ".claude", "skills", "skill-a");
+  const agyPath = path.join(userHome, ".gemini", "config", "skills", "skill-a");
+  const pathsToCheck = [hubPath, claudePath, agyPath];
   for (const p of pathsToCheck) {
     assert.ok(safeLstat(p)?.isSymbolicLink());
   }
@@ -800,12 +814,15 @@ test("seamless migration between link and copy modes", () => {
   updateSettings({ syncMode: "copy" });
   const toCopyRes = applySync();
   assert.equal(toCopyRes.errors.length, 0);
-  assert.equal(toCopyRes.summary.replace, 3);
-  for (const p of pathsToCheck) {
+  assert.equal(toCopyRes.summary.replace, isWin ? 2 : 3);
+  for (const p of isWin ? [hubPath, claudePath] : pathsToCheck) {
     const lst = safeLstat(p);
     assert.ok(lst?.isDirectory());
     assert.equal(lst?.isSymbolicLink(), false);
     assert.equal(isManagedCopyDir(p), true);
+  }
+  if (isWin) {
+    assert.equal(safeLstat(agyPath), null);
   }
   assert.ok(safeLstat(unmanagedKeep)?.isDirectory());
   assert.ok(safeLstat(externalLink)?.isSymbolicLink());
@@ -814,7 +831,7 @@ test("seamless migration between link and copy modes", () => {
   updateSettings({ syncMode: "link" });
   const toLinkRes = applySync();
   assert.equal(toLinkRes.errors.length, 0);
-  assert.equal(toLinkRes.summary.replace, 3);
+  assert.equal(toLinkRes.summary.replace, isWin ? 2 : 3);
   for (const p of pathsToCheck) {
     assert.ok(safeLstat(p)?.isSymbolicLink());
     assert.equal(isManagedCopyDir(p), false);
@@ -886,7 +903,7 @@ test("consolidate, drift refresh, and adoptSkill in copy mode", () => {
   );
 });
 
-test("Windows link-mode Antigravity skills.json manifest sync and cleanup", () => {
+test("Windows Antigravity skills.json manifest sync in copy & link modes, macOS unaffected", () => {
   const manifestPath = path.join(userHome, ".gemini", "config", "skills.json");
   fs.writeFileSync(
     manifestPath,
@@ -901,7 +918,7 @@ test("Windows link-mode Antigravity skills.json manifest sync and cleanup", () =
     "utf8",
   );
 
-  const personalDir = path.join(tmpRoot, "sources", "personal");
+  const personalDir = path.join(userHome, "skill-sources", "personal");
   addSource({ id: "personal", name: "个人", path: personalDir, trust: "github" });
   writeSkill(path.join(personalDir, "skills"), "skill-a");
   writeSkill(path.join(personalDir, "skills"), "skill-b");
@@ -910,31 +927,195 @@ test("Windows link-mode Antigravity skills.json manifest sync and cleanup", () =
   toggleSkill({ skillRef: "personal:skill-b", enabled: true });
   toggleSkill({ skillRef: "personal:skill-b", enabled: false, targetId: "antigravity" });
 
-  updateSettings({ syncMode: "link" });
-  const linkSync = applySync({ platform: "win32" });
-  assert.equal(linkSync.errors.length, 0);
-
-  const manifestAfterLink = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
-  assert.deepEqual(manifestAfterLink.exclude, ["legacy-ignored"]);
-  assert.equal(manifestAfterLink.entries.length, 2);
-  assert.equal(manifestAfterLink.entries[0].path, "C:/custom/my-skills");
-  assert.deepEqual(manifestAfterLink.entries[1].include_only, ["skill-a"]);
-
-  // Switching to copy mode removes only managed entries and keeps user entries
+  // Windows copy mode uses skills.json directly (with ~/ path) and creates zero copies in ~/.gemini/config/skills
   updateSettings({ syncMode: "copy" });
   const copySync = applySync({ platform: "win32" });
   assert.equal(copySync.errors.length, 0);
+  assert.equal(safeLstat(path.join(userHome, ".gemini", "config", "skills", "skill-a")), null);
 
   const manifestAfterCopy = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
   assert.deepEqual(manifestAfterCopy.exclude, ["legacy-ignored"]);
-  assert.deepEqual(manifestAfterCopy.entries, [{ path: "C:/custom/my-skills" }]);
+  assert.equal(manifestAfterCopy.entries.length, 2);
+  assert.equal(manifestAfterCopy.entries[0].path, "C:/custom/my-skills");
+  assert.equal(manifestAfterCopy.entries[1].path, "~/skill-sources/personal/skills");
+  assert.deepEqual(manifestAfterCopy.entries[1].include_only, ["skill-a"]);
 
-  // When skills.json has no user entries, switching to copy removes empty skills.json cleanly
+  // Disabling antigravity removes only managed entries and keeps user entries
+  updateTarget({ id: "antigravity", mode: "disabled" });
+  const disabledSync = applySync({ platform: "win32" });
+  assert.equal(disabledSync.errors.length, 0);
+
+  const manifestAfterDisable = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+  assert.deepEqual(manifestAfterDisable.exclude, ["legacy-ignored"]);
+  assert.deepEqual(manifestAfterDisable.entries, [{ path: "C:/custom/my-skills" }]);
+
+  // When skills.json has no user entries, disabling antigravity or running on macOS removes managed entries cleanly
   fs.unlinkSync(manifestPath);
-  updateSettings({ syncMode: "link" });
+  updateTarget({ id: "antigravity", mode: "link" });
   applySync({ platform: "win32" });
   assert.equal(fs.existsSync(manifestPath), true);
-  updateSettings({ syncMode: "copy" });
-  applySync({ platform: "win32" });
+
+  // macOS does not use skills.json manifest
+  applySync({ platform: "darwin" });
   assert.equal(fs.existsSync(manifestPath), false);
+});
+
+test("planConsolidate skips managed source drift already owned by planSync", () => {
+  updateSettings({ syncMode: "copy" });
+
+  const personalDir = path.join(tmpRoot, "sources", "personal");
+  addSource({ id: "personal", name: "个人", path: personalDir, trust: "github" });
+  const srcA = writeSkill(path.join(personalDir, "skills"), "managed-a", {
+    description: "v1",
+  });
+  toggleSkill({ skillRef: "personal:managed-a", enabled: true });
+  applySync();
+
+  // Edit source skill so managed copies drift
+  fs.writeFileSync(
+    path.join(srcA, "SKILL.md"),
+    "---\nname: managed-a\ndescription: v2\n---\n\n# managed-a\n",
+    "utf8",
+  );
+
+  // planSync reports hub + link targets needing update; planConsolidate must NOT duplicate them
+  const syncPlan = planSync();
+  assert.equal(syncPlan.summary.replace, process.platform === "win32" ? 2 : 3);
+  const consPlan = planConsolidate();
+  assert.equal(consPlan.summary.totalActions, 0);
+});
+
+test("pushSource auto-syncs local managed copies in copy mode", () => {
+  updateSettings({ syncMode: "copy" });
+  const personalDir = path.join(tmpRoot, "sources", "personal");
+  const bareRemote = path.join(tmpRoot, "push-sync-remote.git");
+  execFileSync("git", ["init", "--bare", bareRemote]);
+  fs.writeFileSync(
+    path.join(userHome, ".gitconfig"),
+    "[user]\n\tname = Copy Push Tester\n\temail = copy-push@example.com\n",
+    "utf8",
+  );
+
+  addSource({ id: "personal", name: "个人", path: personalDir, trust: "github" });
+  execFileSync("git", ["remote", "add", "origin", bareRemote], { cwd: personalDir });
+  const srcA = writeSkill(path.join(personalDir, "skills"), "skill-a", { description: "v1" });
+  toggleSkill({ skillRef: "personal:skill-a", enabled: true });
+  applySync();
+
+  fs.writeFileSync(
+    path.join(srcA, "SKILL.md"),
+    "---\nname: skill-a\ndescription: v2 pushed\n---\n",
+    "utf8",
+  );
+  const res = pushSource({ sourceId: "personal", message: "update skill-a" });
+  assert.equal(res.pushed, true);
+  assert.ok(res.sync);
+  assert.equal(res.sync.errors.length, 0);
+  assert.ok(
+    fs
+      .readFileSync(path.join(userHome, ".claude", "skills", "skill-a", "SKILL.md"), "utf8")
+      .includes("v2 pushed"),
+  );
+  assert.equal(planSync().summary.totalPending, 0);
+});
+
+test("git pull --rebase --autostash and push auto-rebase handle diverged repos and roll back conflicts cleanly", () => {
+  process.env.SKILL_HUB_SYNC_MODE = "link";
+  const bareRemote = path.join(tmpRoot, "remote.git");
+  const repoA = path.join(tmpRoot, "sources", "device-a");
+  const repoB = path.join(tmpRoot, "device-b");
+
+  execFileSync("git", ["init", "--bare", bareRemote]);
+  fs.writeFileSync(
+    path.join(userHome, ".gitconfig"),
+    "[user]\n\tname = Sync Tester\n\temail = sync@example.com\n",
+    "utf8",
+  );
+
+  addSource({ id: "personal", name: "个人", path: repoA, trust: "github" });
+  execFileSync("git", ["remote", "add", "origin", bareRemote], { cwd: repoA });
+  writeSkill(path.join(repoA, "skills"), "skill-a", { description: "A v1" });
+  writeSkill(path.join(repoA, "skills"), "skill-b", { description: "B v1" });
+  const initPush = pushSource({ sourceId: "personal", message: "init" });
+  assert.equal(initPush.pushed, true);
+  assert.equal(initPush.rebased, false);
+
+  // Clone a second device repoB from bareRemote
+  execFileSync("git", ["clone", bareRemote, repoB]);
+  execFileSync("git", ["config", "user.name", "Device B"], { cwd: repoB });
+  execFileSync("git", ["config", "user.email", "b@example.com"], { cwd: repoB });
+
+  // 1. Device B edits skill-b and pushes; Device A has uncommitted edits on skill-a -> pullSources succeeds seamlessly
+  fs.writeFileSync(
+    path.join(repoB, "skills", "skill-b", "SKILL.md"),
+    "---\nname: skill-b\ndescription: B from remote\n---\n",
+    "utf8",
+  );
+  execFileSync("git", ["add", "-A"], { cwd: repoB });
+  execFileSync("git", ["commit", "-m", "remote update B"], { cwd: repoB });
+  execFileSync("git", ["push"], { cwd: repoB });
+
+  fs.writeFileSync(
+    path.join(repoA, "skills", "skill-a", "SKILL.md"),
+    "---\nname: skill-a\ndescription: A local dirty\n---\n",
+    "utf8",
+  );
+
+  const pull1 = pullSources({ sourceId: "personal", autoSync: false });
+  assert.equal(pull1.ok, true);
+  assert.equal(pull1.results[0].rebased, true);
+  assert.ok(fs.readFileSync(path.join(repoA, "skills", "skill-b", "SKILL.md"), "utf8").includes("B from remote"));
+  assert.ok(fs.readFileSync(path.join(repoA, "skills", "skill-a", "SKILL.md"), "utf8").includes("A local dirty"));
+
+  // 2. Device B pushes another update to skill-b; Device A clicks pushSource directly -> auto-rebases & pushes cleanly
+  fs.writeFileSync(
+    path.join(repoB, "skills", "skill-b", "SKILL.md"),
+    "---\nname: skill-b\ndescription: B from remote v2\n---\n",
+    "utf8",
+  );
+  execFileSync("git", ["add", "-A"], { cwd: repoB });
+  execFileSync("git", ["commit", "-m", "remote update B v2"], { cwd: repoB });
+  execFileSync("git", ["push"], { cwd: repoB });
+
+  const push2 = pushSource({ sourceId: "personal", message: "local update A" });
+  assert.equal(push2.ok, true);
+  assert.equal(push2.committed, true);
+  assert.equal(push2.rebased, true);
+  assert.equal(push2.pushed, true);
+  assert.ok(fs.readFileSync(path.join(repoA, "skills", "skill-b", "SKILL.md"), "utf8").includes("B from remote v2"));
+
+  // 3. Same-line conflict on uncommitted local edit during pull -> rolls back cleanly without conflict markers
+  execFileSync("git", ["pull", "--rebase"], { cwd: repoB });
+  fs.writeFileSync(
+    path.join(repoB, "skills", "skill-a", "SKILL.md"),
+    "---\nname: skill-a\ndescription: A remote conflict\n---\n",
+    "utf8",
+  );
+  execFileSync("git", ["add", "-A"], { cwd: repoB });
+  execFileSync("git", ["commit", "-m", "remote conflict A"], { cwd: repoB });
+  execFileSync("git", ["push"], { cwd: repoB });
+
+  fs.writeFileSync(
+    path.join(repoA, "skills", "skill-a", "SKILL.md"),
+    "---\nname: skill-a\ndescription: A local conflict\n---\n",
+    "utf8",
+  );
+
+  const pullConflict = pullSources({ sourceId: "personal", autoSync: false });
+  assert.equal(pullConflict.ok, false);
+  assert.match(pullConflict.results[0].error, /冲突/);
+  const aAfterPullConflict = fs.readFileSync(path.join(repoA, "skills", "skill-a", "SKILL.md"), "utf8");
+  assert.ok(aAfterPullConflict.includes("A local conflict"));
+  assert.equal(aAfterPullConflict.includes("<<<<<<<"), false);
+  assert.equal(fs.existsSync(path.join(repoA, ".git", "rebase-merge")), false);
+
+  // 4. Same-line conflict during pushSource -> aborts rebase cleanly and keeps local commit intact
+  assert.throws(
+    () => pushSource({ sourceId: "personal", message: "local conflict commit" }),
+    (err) => err.code === "GIT_CONFLICT" && /skill-a\/SKILL\.md/.test(err.message),
+  );
+  assert.equal(fs.existsSync(path.join(repoA, ".git", "rebase-merge")), false);
+  const aAfterPushConflict = fs.readFileSync(path.join(repoA, "skills", "skill-a", "SKILL.md"), "utf8");
+  assert.ok(aAfterPushConflict.includes("A local conflict"));
+  assert.equal(aAfterPushConflict.includes("<<<<<<<"), false);
 });

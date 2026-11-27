@@ -25,7 +25,7 @@ import {
   writeManagedCopy,
 } from "./paths.mjs";
 import { parseSkillFrontmatter } from "./sources.mjs";
-import { applySync, buildSkillCatalog, resolveDesiredState } from "./sync.mjs";
+import { applySync, buildSkillCatalog } from "./sync.mjs";
 
 function canonicalTargetPath(targetPath) {
   return (
@@ -367,7 +367,6 @@ export function planConsolidate(
 ) {
   const effectiveSyncMode = resolveSyncMode(config);
   const scan = scanAllCopies(config);
-  const desired = resolveDesiredState(config, scan.catalog);
   const filterSet =
     Array.isArray(skillNames) && skillNames.length > 0 ? new Set(skillNames) : null;
   const conflictSet = new Set(scan.conflicts.map((c) => c.dirName));
@@ -453,31 +452,25 @@ export function planConsolidate(
       if (filterSet && !filterSet.has(dirName)) continue;
 
       const hubEntry = scan.hubEntries.get(dirName);
-      const isManaged = Boolean(hubEntry?.isManagedSource);
+      // Managed source skills are owned by planSync()/applySync(); skip them here
+      // so Health -> Consolidate doesn't duplicate pending Sync actions.
+      if (hubEntry?.isManagedSource) continue;
+
       const hubDest = path.join(scan.hubAbsDir, dirName);
-      const managedSkill = isManaged ? scan.catalog.byDirName.get(dirName) : null;
-      const expectedSourceDir = managedSkill ? managedSkill.dir : hubDest;
+      const expectedSourceDir = hubDest;
       const copyMeta = {
         sourceDir: expectedSourceDir,
-        sourceId: managedSkill?.sourceId || null,
-        skillRef: managedSkill?.ref || null,
-        origin: isManaged ? "sync" : "consolidate",
+        sourceId: null,
+        skillRef: null,
+        origin: "consolidate",
       };
 
       for (const target of linkTargets) {
-        // Respect managed skill exclusions/disables
-        if (isManaged && !desired.targetDesired[target.id]?.has(dirName)) {
-          continue;
-        }
-
         const linkAt = path.join(target.dir, dirName);
         const normAt = normalizeForCompare(linkAt);
         if (plannedTargetLinks.has(normAt)) continue;
 
-        const expectedTarget =
-          isManaged && !desired.hubDesired.has(dirName)
-            ? desired.targetDesired[target.id].get(dirName).linkTarget
-            : hubDest;
+        const expectedTarget = hubDest;
 
         // If Step A is moving a real directory OUT of this exact linkAt path,
         // Step B will safely place a symlink or managed copy in its spot right afterward.

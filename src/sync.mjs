@@ -4,6 +4,7 @@ import { loadConfig, loadState, resolveSyncMode, saveState } from "./config.mjs"
 import {
   canonicalOrResolved,
   computeDirDigest,
+  contractHome,
   createDirLink,
   ensureDir,
   expandHome,
@@ -362,6 +363,22 @@ function planDirectorySync({
   return { actions, nextManagedLinks, nextManagedCopies };
 }
 
+export function usesAntigravityManifestOnly(
+  targetId,
+  effectiveSyncMode,
+  platform = process.platform,
+) {
+  return targetId === "antigravity" && platform === "win32" && effectiveSyncMode === "copy";
+}
+
+export function getAntigravityManifestPath(config) {
+  const antigravityTarget = config.targets?.antigravity;
+  const targetSkillsDir = antigravityTarget?.path
+    ? expandHome(antigravityTarget.path)
+    : path.join(getUserHome(), ".gemini", "config", "skills");
+  return path.join(path.dirname(targetSkillsDir), "skills.json");
+}
+
 function planAntigravityManifest(
   config,
   state,
@@ -370,18 +387,14 @@ function planAntigravityManifest(
   { platform = process.platform } = {},
 ) {
   const antigravityTarget = config.targets?.antigravity;
-  const targetSkillsDir = antigravityTarget?.path
-    ? expandHome(antigravityTarget.path)
-    : path.join(getUserHome(), ".gemini", "config", "skills");
-  const manifestPath = path.join(path.dirname(targetSkillsDir), "skills.json");
+  const manifestPath = getAntigravityManifestPath(config);
   const active =
     platform === "win32" &&
-    effectiveSyncMode === "link" &&
     Boolean(antigravityTarget && antigravityTarget.mode !== "disabled");
 
   const existingManifest = readJsonIfExists(manifestPath, null);
   const previouslyManagedSet = new Set(
-    (state.managedManifestEntries || []).map((p) => normalizeForCompare(p)),
+    (state.managedManifestEntries || []).map((p) => normalizeForCompare(expandHome(p))),
   );
 
   if (!active && previouslyManagedSet.size === 0 && !existingManifest) {
@@ -406,7 +419,7 @@ function planAntigravityManifest(
       const norm = normalizeForCompare(parentDir);
       if (!desiredByNormDir.has(norm)) {
         desiredByNormDir.set(norm, {
-          displayPath: parentDir.replace(/\\/g, "/"),
+          displayPath: contractHome(parentDir).replace(/\\/g, "/"),
           dirNames: new Set(),
         });
       }
@@ -420,7 +433,7 @@ function planAntigravityManifest(
   const preservedEntries = [];
   for (const entry of existingEntries) {
     if (!entry || typeof entry !== "object" || typeof entry.path !== "string") continue;
-    const norm = normalizeForCompare(entry.path);
+    const norm = normalizeForCompare(expandHome(entry.path));
     if (previouslyManagedSet.has(norm)) continue;
     if (active && desiredByNormDir.has(norm)) continue;
     preservedEntries.push(entry);
@@ -522,8 +535,11 @@ export function planSync(
   nextManagedLinks.push(...hubPlan.nextManagedLinks);
   nextManagedCopies.push(...hubPlan.nextManagedCopies);
 
-  // Plan each link-mode target
+  // Plan each link-mode target (on Windows copy mode, Antigravity reads source dirs directly via skills.json)
   for (const [targetId, map] of Object.entries(desired.targetDesired)) {
+    if (usesAntigravityManifestOnly(targetId, effectiveSyncMode, platform)) {
+      continue;
+    }
     const targetCfg = config.targets[targetId];
     const targetDir = expandHome(targetCfg.path);
     const entries = new Map();
@@ -591,7 +607,10 @@ export function planSync(
     replace: actionable.filter((a) => a.type === "replace").length,
     remove: actionable.filter((a) => a.type === "remove").length,
     conflicts: actionable.filter((a) => a.type === "skipConflict").length,
-    totalPending: actionable.filter((a) => a.type !== "skipConflict").length,
+    manifestChanged: Boolean(manifestPlan?.changed),
+    totalPending:
+      actionable.filter((a) => a.type !== "skipConflict").length +
+      (manifestPlan?.changed ? 1 : 0),
   };
 
   return {

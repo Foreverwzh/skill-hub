@@ -54,8 +54,6 @@ const CLI_TIMEOUT_MS = 120_000;
 
 type Notice = { error: boolean; text: string };
 type Confirm = { title: string; body: string; action: string; danger?: boolean; run: () => Promise<unknown> };
-type SourceForm = { trust: string; id: string; name: string; path: string; clone: string; allowHosts: string; autoPath: string };
-type ProfileForm = { ref: string | null; sourceId: string; name: string; members: string[] };
 
 // ---- 状态 ----
 
@@ -70,14 +68,26 @@ const expanded = signal<string | null>(null);
 const home = signal("");
 
 const confirm = signal<Confirm | null>(null);
-const sourceForm = signal<SourceForm | null>(null);
+const sourceOpen = signal(false);
+const sourceTrust = signal("local");
+const sourceId = signal("");
+const sourceName = signal("");
+const sourcePath = signal("");
+const sourceClone = signal("");
+const sourceAllowHosts = signal("");
+const sourceAutoPath = signal("");
 const pushFor = signal<any>(null);
 const commitMsg = signal("");
 const convertFor = signal<any>(null);
 const convertRemote = signal("");
 const convertAllow = signal("");
-const trustFor = signal<{ source: any; value: string } | null>(null);
-const profileForm = signal<ProfileForm | null>(null);
+const trustSource = signal<any>(null);
+const trustValue = signal("local");
+const profileOpen = signal(false);
+const profileRef = signal<string | null>(null);
+const profileSourceId = signal("");
+const profileName = signal("");
+const profileMembers = signal<string[]>([]);
 const conflictKeep = signal<Record<string, string>>({});
 const showAllSteps = signal(false);
 
@@ -128,8 +138,8 @@ async function reload() {
   try {
     const data = await runCli(["status"]);
     status.set(data);
-    const form = profileForm();
-    if (form?.ref && !(data.profiles || []).some((p: any) => p.ref === form.ref)) profileForm.set(null);
+    const ref = profileOpen() ? profileRef() : null;
+    if (ref && !(data.profiles || []).some((p: any) => p.ref === ref)) profileOpen.set(false);
   } catch (err) {
     notice.set({ error: true, text: errMsg(err) });
   } finally {
@@ -402,9 +412,10 @@ function DialogShell(props: {
   width?: number;
   children?: any;
 }) {
+  const isOpen = computed(() => Boolean(props.open));
   return (
     <SmeltDialog
-      open={props.open}
+      open={isOpen()}
       accessibilityLabel={props.title}
       onOpenChange={({ open }: { open: boolean }) => {
         if (!open) props.onClose();
@@ -412,7 +423,7 @@ function DialogShell(props: {
       class={`m-auto ${DIALOG_SURFACE_CLASS} p-4`}
       style={{ width: props.width ?? 460, gap: 12 }}
     >
-      <If when={props.open}>
+      <If when={isOpen()}>
         <Text style={titleText()}>{props.title}</Text>
         {props.children}
       </If>
@@ -628,6 +639,14 @@ function SkillsTab() {
   );
 }
 
+function openProfileForm(opts: { ref: string | null; sourceId: string; name: string; members: string[] }) {
+  profileRef.set(opts.ref);
+  profileSourceId.set(opts.sourceId);
+  profileName.set(opts.name);
+  profileMembers.set(opts.members);
+  profileOpen.set(true);
+}
+
 function ProfilesSection() {
   const profiles = computed(() => status()?.profiles || []);
   return (
@@ -639,7 +658,7 @@ function ProfilesSection() {
           small
           label={t("profiles.new")}
           onPress={() =>
-            profileForm.set({ ref: null, sourceId: status()?.sources?.[0]?.id || "", name: "", members: [] })
+            openProfileForm({ ref: null, sourceId: status()?.sources?.[0]?.id || "", name: "", members: [] })
           }
         />
       }
@@ -679,7 +698,7 @@ function ProfilesSection() {
                       {
                         label: t("profiles.edit"),
                         onSelect: () =>
-                          profileForm.set({ ref: p().ref, sourceId: p().sourceId, name: p().name, members: [...p().skills] }),
+                          openProfileForm({ ref: p().ref, sourceId: p().sourceId, name: p().name, members: [...p().skills] }),
                       },
                       {
                         label: t("profiles.delete"),
@@ -854,7 +873,14 @@ function SkillRow(props: { skill: any }) {
 // ---- 仓库 ----
 
 function openSourceForm() {
-  sourceForm.set({ trust: "local", id: "", name: "", path: "", clone: "", allowHosts: "", autoPath: "" });
+  sourceTrust.set("local");
+  sourceId.set("");
+  sourceName.set("");
+  sourcePath.set("");
+  sourceClone.set("");
+  sourceAllowHosts.set("");
+  sourceAutoPath.set("");
+  sourceOpen.set(true);
 }
 
 function SourcesTab() {
@@ -883,7 +909,13 @@ function SourceCard(props: { source: any }) {
   const openMore = (e: any) => {
     const items: any[] = [
       { label: t("action.copy_path"), onSelect: () => void copy(s().absPath) },
-      { label: t("source.change_trust"), onSelect: () => trustFor.set({ source: s(), value: s().trust }) },
+      {
+        label: t("source.change_trust"),
+        onSelect: () => {
+          trustValue.set(s().trust);
+          trustSource.set(s());
+        },
+      },
     ];
     if (remoteGit()) {
       items.push({
@@ -1265,8 +1297,11 @@ function ConfirmDialog() {
 }
 
 function SourceDialog() {
-  const f = () => sourceForm()!;
-  const patch = (next: Partial<SourceForm>) => sourceForm.set({ ...f(), ...next });
+  const warnCompany = computed(() =>
+    looksCompanyOnGithub({ trust: sourceTrust(), id: sourceId(), name: sourceName() }),
+  );
+  const showClone = computed(() => sourceTrust() !== "local");
+  const showAllowHosts = computed(() => sourceTrust() === "internal");
   const pick = async () => {
     const picked = await run("smelt.app/pick-paths", {
       machine: null,
@@ -1275,52 +1310,67 @@ function SourceDialog() {
       files: false,
       multiple: false,
     });
-    if (Array.isArray(picked) && picked[0]) patch({ path: picked[0], autoPath: "" });
+    if (Array.isArray(picked) && picked[0]) {
+      sourcePath.set(picked[0]);
+      sourceAutoPath.set("");
+    }
   };
   const submit = () => {
-    const args = addSourceArgs(f());
+    const form = {
+      trust: sourceTrust(),
+      id: sourceId(),
+      name: sourceName(),
+      path: sourcePath(),
+      clone: sourceClone(),
+      allowHosts: sourceAllowHosts(),
+    };
+    const args = addSourceArgs(form);
     if (!args) {
       notice.set({ error: true, text: t("source.required") });
       return;
     }
-    const name = f().name.trim() || f().id.trim();
-    sourceForm.set(null);
+    const name = form.name.trim() || form.id.trim();
+    sourceOpen.set(false);
     void cli("add-source", args, t("notice.source_added", { name }));
   };
   return (
-    <DialogShell open={sourceForm() != null} title={t("source.add_title")} width={520} onClose={() => sourceForm.set(null)}>
+    <DialogShell open={sourceOpen()} title={t("source.add_title")} width={520} onClose={() => sourceOpen.set(false)}>
       <RadioGroup accessibilityLabel={t("source.trust")} style={wrapRow(12)}>
         <Each of={TRUSTS} key={(k: string) => k}>
-          {(k: () => string) => <Radio label={t(`trust.${k()}`)} checked={f().trust === k()} onSelect={() => patch({ trust: k() })} />}
+          {(k: () => string) => <Radio label={t(`trust.${k()}`)} checked={sourceTrust() === k()} onSelect={() => sourceTrust.set(k())} />}
         </Each>
       </RadioGroup>
-      <If when={looksCompanyOnGithub(f())}>
+      <If when={warnCompany()}>
         <Text style={mutedText({ color: look().palette.need })}>{t("source.warn_company")}</Text>
       </If>
       <View style={row(8)}>
         <Field
-          value={f().id}
+          value={sourceId()}
           placeholder={t("source.id")}
           onChange={(id) => {
             const auto = id.trim() ? `~/skill-sources/${id.trim()}` : "";
-            const keepAuto = !f().path.trim() || f().path === f().autoPath;
-            patch(keepAuto ? { id, path: auto, autoPath: auto } : { id });
+            const keepAuto = !sourcePath().trim() || sourcePath() === sourceAutoPath();
+            sourceId.set(id);
+            if (keepAuto) {
+              sourcePath.set(auto);
+              sourceAutoPath.set(auto);
+            }
           }}
         />
-        <Field value={f().name} placeholder={t("source.name")} onChange={(name) => patch({ name })} />
+        <Field value={sourceName()} placeholder={t("source.name")} onChange={(name) => sourceName.set(name)} />
       </View>
       <View style={row(8)}>
-        <Field value={f().path} placeholder={t("source.path")} onChange={(path) => patch({ path })} />
+        <Field value={sourcePath()} placeholder={t("source.path")} onChange={(path) => sourcePath.set(path)} />
         <SmeltButton small label={t("source.pick")} onPress={() => void pick()} />
       </View>
-      <If when={f().trust !== "local"}>
-        <Field value={f().clone} placeholder={t("source.clone")} onChange={(clone) => patch({ clone })} />
+      <If when={showClone()}>
+        <Field value={sourceClone()} placeholder={t("source.clone")} onChange={(clone) => sourceClone.set(clone)} />
       </If>
-      <If when={f().trust === "internal"}>
-        <Field value={f().allowHosts} placeholder={t("source.allow_hosts")} onChange={(allowHosts) => patch({ allowHosts })} />
+      <If when={showAllowHosts()}>
+        <Field value={sourceAllowHosts()} placeholder={t("source.allow_hosts")} onChange={(allowHosts) => sourceAllowHosts.set(allowHosts)} />
       </If>
-      <Text style={mutedText()}>{t(`source.hint.${f().trust}`)}</Text>
-      <DialogButtons action={t("source.add_action")} onCancel={() => sourceForm.set(null)} onConfirm={submit} />
+      <Text style={mutedText()}>{t(`source.hint.${sourceTrust()}`)}</Text>
+      <DialogButtons action={t("source.add_action")} onCancel={() => sourceOpen.set(false)} onConfirm={submit} />
     </DialogShell>
   );
 }
@@ -1369,24 +1419,25 @@ function ConvertDialog() {
 }
 
 function TrustDialog() {
-  const v = () => trustFor()?.value ?? "local";
   return (
-    <DialogShell open={trustFor() != null} title={t("trust_dialog.title", { name: trustFor()?.source?.name ?? "" })} onClose={() => trustFor.set(null)}>
+    <DialogShell open={trustSource() != null} title={t("trust_dialog.title", { name: trustSource()?.name ?? "" })} onClose={() => trustSource.set(null)}>
       <RadioGroup accessibilityLabel={t("source.trust")} style={wrapRow(12)}>
         <Each of={TRUSTS} key={(k: string) => k}>
           {(k: () => string) => (
-            <Radio label={t(`trust.${k()}`)} checked={v() === k()} onSelect={() => trustFor.set({ ...trustFor()!, value: k() })} />
+            <Radio label={t(`trust.${k()}`)} checked={trustValue() === k()} onSelect={() => trustValue.set(k())} />
           )}
         </Each>
       </RadioGroup>
-      <Text style={mutedText()}>{t(`trust_dialog.hint.${v()}`)}</Text>
+      <Text style={mutedText()}>{t(`trust_dialog.hint.${trustValue()}`)}</Text>
       <DialogButtons
         action={t("trust_dialog.action")}
-        disabled={v() === trustFor()?.source?.trust}
-        onCancel={() => trustFor.set(null)}
+        disabled={trustValue() === trustSource()?.trust}
+        onCancel={() => trustSource.set(null)}
         onConfirm={() => {
-          const { source, value } = trustFor()!;
-          trustFor.set(null);
+          const source = trustSource();
+          const value = trustValue();
+          trustSource.set(null);
+          if (!source) return;
           void cli(`trust:${source.id}`, ["source", "set-trust", source.id, "--trust", value], t("notice.trust_set", { name: source.name, trust: t(`trust.${value}`) }));
         }}
       />
@@ -1395,42 +1446,50 @@ function TrustDialog() {
 }
 
 function ProfileDialog() {
-  const f = () => profileForm()!;
-  const editing = () => profileForm()?.ref != null;
-  const srcSkills = computed(() => (status()?.skills || []).filter((s: any) => s.sourceId === profileForm()?.sourceId));
+  const editing = computed(() => profileRef() != null);
+  const srcSkills = computed(() => (status()?.skills || []).filter((s: any) => s.sourceId === profileSourceId()));
   const toggle = (dir: string, on: boolean) =>
-    profileForm.set({ ...f(), members: on ? withItem(f().members, dir) : withoutItem(f().members, dir) });
+    profileMembers.set(on ? withItem(profileMembers(), dir) : withoutItem(profileMembers(), dir));
   const save = () => {
-    const form = f();
-    const ref = form.ref ?? `${form.sourceId}:${form.name.trim()}`;
-    if (!form.ref && !form.name.trim()) {
+    const existingRef = profileRef();
+    const rawName = profileName().trim();
+    const ref = existingRef ?? `${profileSourceId()}:${rawName}`;
+    if (!existingRef && !rawName) {
       notice.set({ error: true, text: t("profiles.name_required") });
       return;
     }
-    profileForm.set(null);
-    void cli("save-profile", ["profile", "set", ref, `--skills=${form.members.join(",")}`], t("notice.profile_saved", { name: ref, n: form.members.length }));
+    const members = profileMembers();
+    profileOpen.set(false);
+    void cli("save-profile", ["profile", "set", ref, `--skills=${members.join(",")}`], t("notice.profile_saved", { name: ref, n: members.length }));
   };
   return (
     <DialogShell
-      open={profileForm() != null}
-      title={editing() ? t("profiles.edit_title", { name: profileForm()?.ref ?? "" }) : t("profiles.new_title")}
+      open={profileOpen()}
+      title={editing() ? t("profiles.edit_title", { name: profileRef() ?? "" }) : t("profiles.new_title")}
       width={560}
-      onClose={() => profileForm.set(null)}
+      onClose={() => profileOpen.set(false)}
     >
       <If when={!editing()}>
-        <Field value={f().name} placeholder={t("profiles.name")} onChange={(name) => profileForm.set({ ...f(), name })} />
+        <Field value={profileName()} placeholder={t("profiles.name")} onChange={(name) => profileName.set(name)} />
         <RadioGroup accessibilityLabel={t("profiles.source")} style={wrapRow(12)}>
           <Each of={status()?.sources || []} key={(s: any) => s.id}>
             {(s: () => any) => (
-              <Radio label={s().name} checked={f().sourceId === s().id} onSelect={() => profileForm.set({ ...f(), sourceId: s().id, members: [] })} />
+              <Radio
+                label={s().name}
+                checked={profileSourceId() === s().id}
+                onSelect={() => {
+                  profileSourceId.set(s().id);
+                  profileMembers.set([]);
+                }}
+              />
             )}
           </Each>
         </RadioGroup>
       </If>
       <View style={row(6)}>
-        <Text style={mutedText({ flex: 1 })}>{t("profiles.members", { n: f().members.length, total: srcSkills().length })}</Text>
-        <SmeltButton quiet small label={t("profiles.all")} onPress={() => profileForm.set({ ...f(), members: srcSkills().map((s: any) => s.dirName) })} />
-        <SmeltButton quiet small label={t("profiles.none")} onPress={() => profileForm.set({ ...f(), members: [] })} />
+        <Text style={mutedText({ flex: 1 })}>{t("profiles.members", { n: profileMembers().length, total: srcSkills().length })}</Text>
+        <SmeltButton quiet small label={t("profiles.all")} onPress={() => profileMembers.set(srcSkills().map((s: any) => s.dirName))} />
+        <SmeltButton quiet small label={t("profiles.none")} onPress={() => profileMembers.set([])} />
       </View>
       <Scroll style={{ maxHeight: 280, width: "100%" }}>
         <View style={wrapRow(10)}>
@@ -1439,12 +1498,12 @@ function ProfileDialog() {
           </If>
           <Each of={srcSkills()} key={(s: any) => s.dirName}>
             {(s: () => any) => (
-              <Check label={s().dirName} checked={f().members.includes(s().dirName)} onChange={(v) => toggle(s().dirName, v)} />
+              <Check label={s().dirName} checked={profileMembers().includes(s().dirName)} onChange={(v) => toggle(s().dirName, v)} />
             )}
           </Each>
         </View>
       </Scroll>
-      <DialogButtons action={t("profiles.save")} onCancel={() => profileForm.set(null)} onConfirm={save} />
+      <DialogButtons action={t("profiles.save")} onCancel={() => profileOpen.set(false)} onConfirm={save} />
     </DialogShell>
   );
 }

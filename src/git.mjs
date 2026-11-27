@@ -221,6 +221,114 @@ export function getRepoStatus(dirPath, skillsRelDir = "skills") {
   };
 }
 
+function listConflictedFiles(dirPath) {
+  const res = runGit(dirPath, ["diff", "--name-only", "--diff-filter=U"]);
+  if (!res.ok || !res.stdout) return [];
+  return res.stdout
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
+function isRebaseInProgress(dirPath) {
+  for (const name of ["rebase-merge", "rebase-apply"]) {
+    const pRes = runGit(dirPath, ["rev-parse", "--git-path", name]);
+    if (pRes.ok && pRes.stdout) {
+      const fullPath = path.isAbsolute(pRes.stdout)
+        ? pRes.stdout
+        : path.resolve(dirPath, pRes.stdout);
+      if (safeLstat(fullPath)) return true;
+    }
+  }
+  return false;
+}
+
+function getBehindCount(dirPath) {
+  const res = runGit(dirPath, ["rev-list", "--count", "HEAD..@{u}"]);
+  if (!res.ok || !res.stdout) return 0;
+  return Number.parseInt(res.stdout.trim(), 10) || 0;
+}
+
+/**
+ * Safely rebases local commits (and optionally autostashed working-tree changes)
+ * onto `@{u}`. On conflict, aborts and restores the exact pre-rebase state so
+ * skill files are never left with conflict markers or an unfinished rebase.
+ */
+function safeRebaseOntoUpstream(dirPath, { allowAutostash = true } = {}) {
+  const behind = getBehindCount(dirPath);
+  if (behind === 0) {
+    return { rebased: false, output: "Already up to date." };
+  }
+
+  const origHeadRes = runGit(dirPath, ["rev-parse", "HEAD"]);
+  const origHead = origHeadRes.ok ? origHeadRes.stdout.trim() : null;
+
+  let stashed = false;
+  if (allowAutostash) {
+    const dirtyRes = runGit(dirPath, ["status", "--porcelain=v1", "-uall"]);
+    if (dirtyRes.ok && dirtyRes.stdout.trim().length > 0) {
+      const stashRes = runGit(dirPath, [
+        "stash",
+        "push",
+        "--include-untracked",
+        "-m",
+        "skill-hub-autostash",
+      ]);
+      if (!stashRes.ok) {
+        throw new Error(`暂存本地改动失败: ${stashRes.stderr || stashRes.stdout}`);
+      }
+      stashed = !stashRes.stdout.includes("No local changes to save");
+    }
+  }
+
+  const rebaseRes = runGit(dirPath, ["rebase", "@{u}"]);
+  if (!rebaseRes.ok) {
+    const conflicts = listConflictedFiles(dirPath);
+    if (isRebaseInProgress(dirPath)) {
+      runGit(dirPath, ["rebase", "--abort"]);
+    }
+    if (stashed) {
+      runGit(dirPath, ["stash", "pop"]);
+    }
+    const detail =
+      conflicts.length > 0
+        ? `冲突文件: ${conflicts.join(", ")}`
+        : rebaseRes.stderr || rebaseRes.stdout;
+    const err = new Error(
+      `本地与远端存在同文件冲突，已自动中止变基并保留本地原样（${detail}），请手动合并后再试`,
+    );
+    err.code = "GIT_CONFLICT";
+    err.conflicts = conflicts;
+    throw err;
+  }
+
+  if (stashed) {
+    const popRes = runGit(dirPath, ["stash", "pop"]);
+    if (!popRes.ok) {
+      const conflicts = listConflictedFiles(dirPath);
+      if (origHead) {
+        runGit(dirPath, ["reset", "--hard", origHead]);
+        runGit(dirPath, ["stash", "pop"]);
+      }
+      const detail =
+        conflicts.length > 0
+          ? `冲突文件: ${conflicts.join(", ")}`
+          : popRes.stderr || popRes.stdout;
+      const err = new Error(
+        `本地未提交改动与远端更新冲突，已自动回滚并保留你的本地改动（${detail}），请先提交或手动合并后再拉取`,
+      );
+      err.code = "GIT_CONFLICT";
+      err.conflicts = conflicts;
+      throw err;
+    }
+  }
+
+  return {
+    rebased: true,
+    output: rebaseRes.stdout || "Rebased onto upstream.",
+  };
+}
+
 export function gitPull(source) {
   if (!isGitRepo(source.absPath)) {
     return { ok: true, skipped: true, reason: "非 Git 仓库，已跳过拉取" };
@@ -253,17 +361,12 @@ export function gitPull(source) {
     return { ok: true, skipped: true, reason: "当前分支尚未关联上游分支（已完成 fetch）" };
   }
 
-  const pullRes = runGit(source.absPath, ["pull", "--ff-only"]);
-  if (!pullRes.ok) {
-    throw new Error(
-      `git pull --ff-only 失败（可能存在本地冲突或分叉，请手动处理）: ${pullRes.stderr || pullRes.stdout}`,
-    );
-  }
-
+  const rebaseRes = safeRebaseOntoUpstream(source.absPath, { allowAutostash: true });
   return {
     ok: true,
     skipped: false,
-    output: pullRes.stdout || "Already up to date.",
+    rebased: rebaseRes.rebased,
+    output: rebaseRes.output,
   };
 }
 
@@ -302,6 +405,7 @@ export function gitCommitAndPush(source, { message, skipPush = false } = {}) {
     committed = true;
   }
 
+  let rebased = false;
   let pushed = false;
   let pushOutput = "";
   if (!skipPush) {
@@ -309,16 +413,43 @@ export function gitCommitAndPush(source, { message, skipPush = false } = {}) {
       return {
         ok: true,
         committed,
+        rebased: false,
         pushed: false,
         note: "已完成本地提交，但该源尚未配置 Git remote（未推送）",
       };
     }
 
     const upstreamRes = runGit(source.absPath, ["rev-parse", "--abbrev-ref", "@{u}"]);
-    const pushArgs = upstreamRes.ok
+    const hasUpstream = upstreamRes.ok;
+
+    if (hasUpstream) {
+      const fetchRes = runGit(source.absPath, ["fetch", "--prune"]);
+      if (!fetchRes.ok) {
+        throw new Error(`git fetch 失败: ${fetchRes.stderr || fetchRes.stdout}`);
+      }
+      const rebaseOutcome = safeRebaseOntoUpstream(source.absPath, { allowAutostash: false });
+      rebased = rebaseOutcome.rebased;
+    }
+
+    const pushArgs = hasUpstream
       ? ["push"]
       : ["push", "-u", remotes[0].name, statusBefore.branch || "HEAD"];
-    const pushRes = runGit(source.absPath, pushArgs);
+    let pushRes = runGit(source.absPath, pushArgs);
+
+    // Handle concurrent remote push between fetch and push with one automatic rebase retry
+    if (
+      !pushRes.ok &&
+      hasUpstream &&
+      /(non-fast-forward|fetch first|rejected)/i.test(`${pushRes.stderr}\n${pushRes.stdout}`)
+    ) {
+      const retryFetch = runGit(source.absPath, ["fetch", "--prune"]);
+      if (retryFetch.ok) {
+        const retryRebase = safeRebaseOntoUpstream(source.absPath, { allowAutostash: false });
+        rebased = rebased || retryRebase.rebased;
+        pushRes = runGit(source.absPath, pushArgs);
+      }
+    }
+
     if (!pushRes.ok) {
       throw new Error(`git push 失败: ${pushRes.stderr || pushRes.stdout}`);
     }
@@ -329,7 +460,9 @@ export function gitCommitAndPush(source, { message, skipPush = false } = {}) {
   return {
     ok: true,
     committed,
+    rebased,
     pushed,
     pushOutput,
+    ...(rebased ? { note: "已自动拉取并变基远端更新，随后完成推送" } : {}),
   };
 }

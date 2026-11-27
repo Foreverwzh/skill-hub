@@ -153,15 +153,27 @@ export function ensureDir(dirPath) {
 }
 
 /**
- * Creates a directory symlink on POSIX or a Directory Junction on Windows
- * (junctions do not require administrator or Developer Mode privileges).
+ * Creates a directory symlink on POSIX. On Windows, tries a true directory symlink first
+ * (works when Developer Mode or elevation is enabled and is followed by all scanners),
+ * falling back to a Directory Junction when symlink creation lacks privileges.
  */
 export function createDirLink(targetDir, linkPath) {
   const absTarget = path.resolve(targetDir);
   const absLink = path.resolve(linkPath);
   ensureDir(path.dirname(absLink));
-  const linkType = IS_WINDOWS ? "junction" : "dir";
-  fs.symlinkSync(absTarget, absLink, linkType);
+  if (!IS_WINDOWS) {
+    fs.symlinkSync(absTarget, absLink, "dir");
+    return;
+  }
+  try {
+    fs.symlinkSync(absTarget, absLink, "dir");
+  } catch (err) {
+    if (err.code === "EPERM" || err.code === "EACCES" || err.code === "ENOTSUP") {
+      fs.symlinkSync(absTarget, absLink, "junction");
+      return;
+    }
+    throw err;
+  }
 }
 
 /**

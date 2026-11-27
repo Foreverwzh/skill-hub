@@ -31,6 +31,7 @@ import {
   contractHome,
   expandHome,
   normalizeForCompare,
+  readJsonIfExists,
   readManagedCopyMarker,
   safeLstat,
   safeRealpath,
@@ -49,9 +50,52 @@ import {
   setSourceTrust,
   updateSourceProfileMember,
 } from "./sources.mjs";
-import { applySync, buildSkillCatalog, planSync } from "./sync.mjs";
+import {
+  applySync,
+  buildSkillCatalog,
+  getAntigravityManifestPath,
+  planSync,
+  usesAntigravityManifestOnly,
+} from "./sync.mjs";
 
-function computeSkillCoverage(skill, desired, config, effectiveSyncMode, sourceDigest) {
+function readAntigravityManifestIndex(config) {
+  const manifestPath = getAntigravityManifestPath(config);
+  const manifest = readJsonIfExists(manifestPath, null);
+  const index = new Map(); // normParentDir -> Set<dirName> | null (null = all included)
+  const entries = Array.isArray(manifest?.entries) ? manifest.entries : [];
+  for (const entry of entries) {
+    if (!entry || typeof entry !== "object" || typeof entry.path !== "string") continue;
+    const norm = normalizeForCompare(canonicalOrResolved(expandHome(entry.path)));
+    if (Array.isArray(entry.include_only)) {
+      const existing = index.get(norm);
+      if (existing !== null) {
+        const set = existing || new Set();
+        for (const name of entry.include_only) set.add(String(name));
+        index.set(norm, set);
+      }
+    } else {
+      index.set(norm, null);
+    }
+  }
+  return index;
+}
+
+function isSkillInAntigravityManifest(manifestIndex, skill) {
+  const parentDir = path.dirname(canonicalOrResolved(skill.dir));
+  const norm = normalizeForCompare(parentDir);
+  if (!manifestIndex.has(norm)) return false;
+  const allowed = manifestIndex.get(norm);
+  return allowed === null || allowed.has(skill.dirName);
+}
+
+function computeSkillCoverage(
+  skill,
+  desired,
+  config,
+  effectiveSyncMode,
+  sourceDigest,
+  { platform = process.platform, antigravityManifestIndex = new Map() } = {},
+) {
   function inspectEntry(entryPath) {
     const lst = safeLstat(entryPath);
     if (!lst) return "missing";
@@ -94,6 +138,25 @@ function computeSkillCoverage(skill, desired, config, effectiveSyncMode, sourceD
         label: target.label || targetId,
         mode: "hub-only",
         status: hubActive ? "via-hub" : hubDesired ? "pending" : "off",
+      });
+      continue;
+    }
+
+    if (usesAntigravityManifestOnly(targetId, effectiveSyncMode, platform)) {
+      const targetWant = desired.targetDesired[targetId]?.has(skill.dirName) || false;
+      const inManifest = isSkillInAntigravityManifest(antigravityManifestIndex, skill);
+      const status = targetWant
+        ? inManifest
+          ? "linked"
+          : "pending"
+        : inManifest
+          ? "pending-remove"
+          : "off";
+      coverage.push({
+        targetId,
+        label: target.label || known?.label || targetId,
+        mode: "link",
+        status,
       });
       continue;
     }
@@ -181,6 +244,11 @@ export function getFullStatus() {
     }
   }
 
+  const antigravityManifestIndex =
+    process.platform === "win32" && effectiveSyncMode === "copy"
+      ? readAntigravityManifestIndex(config)
+      : new Map();
+
   const digestCache = new Map();
   const getDigest = (dirPath) => {
     if (effectiveSyncMode !== "copy") return null;
@@ -230,6 +298,7 @@ export function getFullStatus() {
         config,
         effectiveSyncMode,
         sourceDigest,
+        { platform: process.platform, antigravityManifestIndex },
       ),
     };
   });
@@ -387,8 +456,13 @@ export function pullSources({ sourceId = null, autoSync = true } = {}) {
 }
 
 export function pushSource({ sourceId, message = "", skipPush = false }) {
-  const source = getSourceById(sourceId);
-  return gitCommitAndPush(source, { message, skipPush });
+  const config = loadConfig();
+  const source = getSourceById(sourceId, config);
+  const res = gitCommitAndPush(source, { message, skipPush });
+  if (res.rebased || resolveSyncMode(config) === "copy") {
+    res.sync = applySync({ dryRun: false });
+  }
+  return res;
 }
 
 export function runGuardCheck({ sourceId = null, repoPath = null } = {}) {
