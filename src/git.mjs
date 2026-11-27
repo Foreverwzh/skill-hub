@@ -2,18 +2,59 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { loadGuardConfig } from "./config.mjs";
+import { loadGuardConfig, loadRuntimeInfo } from "./config.mjs";
 import {
   extractHostFromRemoteUrl,
   guardSource,
   hasPrePushHook,
   validateRemoteUrlForTrust,
 } from "./guard.mjs";
-import { getUserHome, IS_WINDOWS, safeLstat } from "./paths.mjs";
+import { getUserHome, IS_WINDOWS, safeLstat, safeStat } from "./paths.mjs";
+
+function isExecutableFile(filePath) {
+  return Boolean(filePath && safeStat(filePath)?.isFile());
+}
+
+/**
+ * Resolves the absolute path to `git` even when launched from GUI apps (like Smelt on Windows)
+ * whose PATH omits custom Git install directories (e.g. `E:\AI\tools\Git\cmd`).
+ */
+export function resolveGitBinary() {
+  const runtime = loadRuntimeInfo();
+  if (runtime?.gitPath && isExecutableFile(runtime.gitPath)) {
+    return runtime.gitPath;
+  }
+
+  const binName = IS_WINDOWS ? "git.exe" : "git";
+  const pathDirs = (process.env.PATH || "")
+    .split(path.delimiter)
+    .map((p) => p.trim())
+    .filter(Boolean);
+  const home = getUserHome();
+  const fallbackDirs = IS_WINDOWS
+    ? [
+        "C:\\Program Files\\Git\\cmd",
+        "C:\\Program Files\\Git\\bin",
+        "C:\\Program Files (x86)\\Git\\cmd",
+        path.join(home, "scoop", "shims"),
+        path.join(home, "AppData", "Local", "Programs", "Git", "cmd"),
+      ]
+    : ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"];
+
+  for (const dir of [...pathDirs, ...fallbackDirs]) {
+    const candidate = path.join(dir, binName);
+    if (isExecutableFile(candidate)) {
+      return candidate;
+    }
+  }
+  return "git";
+}
 
 export function buildGitEnv(extraEnv = {}) {
   const env = { ...process.env, ...extraEnv };
   const home = getUserHome();
+  const gitBin = resolveGitBinary();
+  const gitDir = path.isAbsolute(gitBin) ? path.dirname(gitBin) : null;
 
   if (IS_WINDOWS) {
     if (!env.USERPROFILE) env.USERPROFILE = home;
@@ -36,8 +77,13 @@ export function buildGitEnv(extraEnv = {}) {
     .map((p) => p.trim())
     .filter(Boolean);
   const extraParts = IS_WINDOWS
-    ? [path.dirname(process.execPath)]
+    ? [
+        ...(gitDir ? [gitDir] : []),
+        path.dirname(process.execPath),
+        "C:\\Program Files\\Git\\cmd",
+      ]
     : [
+        ...(gitDir ? [gitDir] : []),
         path.dirname(process.execPath),
         "/opt/homebrew/bin",
         "/usr/local/bin",
@@ -65,7 +111,8 @@ export function buildGitEnv(extraEnv = {}) {
 function runGit(cwd, args, options = {}) {
   try {
     const { env: extraEnv, ...restOptions } = options;
-    const out = execFileSync("git", args, {
+    const gitBin = resolveGitBinary();
+    const out = execFileSync(gitBin, args, {
       cwd,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],

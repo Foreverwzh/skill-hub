@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { saveRuntimeInfo } from "../src/config.mjs";
+import { resolveGitBinary } from "../src/git.mjs";
 import {
   copyDirRecursive,
   createDirLink,
@@ -51,13 +52,18 @@ if (process.platform !== "win32") {
   }
 }
 
-// Persist exact node binary path so GUI apps (Smelt) find node even if managed by mise/nvm/fnm
+// Persist exact node & git binary paths so GUI apps (Smelt) find them even with stripped PATH
 const resolvedNode = safeRealpath(process.execPath) || process.execPath;
+const detectedGit = resolveGitBinary();
+const resolvedGit = path.isAbsolute(detectedGit) ? safeRealpath(detectedGit) || detectedGit : null;
 saveRuntimeInfo({
   nodePath: resolvedNode,
   cliPath: CLI_PATH,
+  ...(resolvedGit ? { gitPath: resolvedGit } : {}),
 });
-console.log(`已写入运行环境配置: node=${resolvedNode}, cli=${CLI_PATH}`);
+console.log(
+  `已写入运行环境配置: node=${resolvedNode}, cli=${CLI_PATH}${resolvedGit ? `, git=${resolvedGit}` : ""}`,
+);
 
 // Link or copy plugin into ~/.smelt/plugins/ai.smelt.skill-hub if ~/.smelt exists
 if (safeLstat(smeltDir)) {

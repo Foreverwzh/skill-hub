@@ -304,9 +304,13 @@ export function loadRuntimeInfo() {
 
 export function saveRuntimeInfo(info) {
   const { runtimeFile } = getConfigPaths();
-  writeJsonAtomic(runtimeFile, {
+  const payload = {
     nodePath: String(info.nodePath),
     cliPath: String(info.cliPath),
     updatedAt: new Date().toISOString(),
-  });
+  };
+  if (info.gitPath) {
+    payload.gitPath = String(info.gitPath);
+  }
+  writeJsonAtomic(runtimeFile, payload);
 }

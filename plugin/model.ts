@@ -93,11 +93,16 @@ export function formatTime(ms: any) {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
-/** 把 `/Users/x/foo` 写成 `~/foo`。 */
+/** 把 `/Users/x/foo` 或 `C:\Users\x\foo` 写成 `~/foo`。 */
 export function prettyPath(home: any, path: any) {
   if (!home || !path) return path || "";
-  if (path === home) return "~";
-  return path.startsWith(`${home}/`) ? `~${path.slice(home.length)}` : path;
+  const normHome = String(home).replace(/[\\/]+$/, "");
+  const raw = String(path);
+  if (raw === normHome) return "~";
+  if (raw.startsWith(`${normHome}/`) || raw.startsWith(`${normHome}\\`)) {
+    return `~/${raw.slice(normHome.length + 1).replace(/\\/g, "/")}`;
+  }
+  return raw;
 }
 
 /** `source add` 的参数；校验不过返回 null。 */
